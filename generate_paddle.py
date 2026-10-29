@@ -23,19 +23,27 @@ INCH = 25.4
 
 # Head shapes, sized after current production paddles.  USA Pickleball allows
 # length <= 17 in and length + width <= 24 in; hybrid and elongated shapes sit
-# just under that 24 in total.  `handle` runs from the butt cap to the bottom
-# edge of the face; `bottom_width` < `width` tapers the face toward the throat.
+# just under that 24 in total.
+#
+# The outline is the hull of the top corner circles (`top_r`), the shoulder
+# circles (`shoulder_r`, centred at `shoulder_y`) and a narrow tip at `v_y`,
+# so the lower face tapers in a V.  A neck `neck_hw` wide (half-width) joins
+# that V to the handle through concave fillets of radius `fillet`.  `handle`
+# runs from the butt cap to the neck.
 SHAPES = {
     # Classic shape, e.g. Selkirk Epic 15.75 x 8 in, 5.25 in handle.
-    "standard": dict(length=400.0, width=197.0, handle=133.0,
-                     top_r=38.0, bottom_r=28.0, bottom_width=197.0),
+    "standard": dict(length=400.0, width=197.0, handle=133.0, top_r=52.0,
+                     shoulder_y=208.0, shoulder_r=52.0, v_y=135.0, v_hw=10.0,
+                     neck_hw=20.0, fillet=36.0),
     # e.g. RPM Q2 Hybrid Flat Top 16.25 x 7.7 in, 5.5 in handle.
-    "hybrid": dict(length=412.5, width=195.5, handle=140.0,
-                   top_r=42.0, bottom_r=30.0, bottom_width=185.0),
-    # e.g. JOOLA Perseus / Hyperion and RPM Friction Pro Elongated
-    # 16.5 x 7.5 in, 5.5 in handle; Selkirk Invikta 16.5 x 7.375 in.
-    "elongated": dict(length=419.0, width=190.0, handle=140.0,
-                      top_r=30.0, bottom_r=24.0, bottom_width=178.0),
+    "hybrid": dict(length=412.5, width=195.5, handle=137.0, top_r=62.0,
+                   shoulder_y=222.0, shoulder_r=55.0, v_y=139.0, v_hw=10.0,
+                   neck_hw=20.0, fillet=38.0),
+    # Fitted to a photo of a JOOLA Perseus (0.9 mm RMS); compare RPM Friction
+    # Pro Elongated 16.5 x 7.5 in and Selkirk Invikta 16.5 x 7.375 in.
+    "elongated": dict(length=419.0, width=190.0, handle=137.0, top_r=70.0,
+                      shoulder_y=228.0, shoulder_r=55.0, v_y=139.0, v_hw=10.0,
+                      neck_hw=20.0, fillet=38.0),
 }
 
 # Face
@@ -53,36 +61,62 @@ GRIP_WIDTH = 36.0
 GRIP_DEPTH = 24.0
 GRIP_CHAMFER = 5.0
 THROAT_START = 15.0        # grip starts blending this far below the face
-THROAT_REACH = 17.0        # ...and has fully blended this far into it
-THROAT_WIDTH = 64.0
+THROAT_REACH = 22.0        # ...and has fully blended this far into it
+THROAT_WIDTH = 64.0        # blend width there, if the neck is wide enough
+THROAT_STEPS = 12          # rings in the blend's loft
+THROAT_CLEARANCE = EDGE_RADIUS + 0.5  # blend stays clear of the rounded edge
+GRIP_FILLET = 12.0         # top-view fillet where the grip meets the neck
+COLLAR_BELOW = 8.0         # collar band covering the grip-to-neck step runs
+COLLAR_ABOVE = 2.0         # from this far below the face to this far into it
+COLLAR_PROUD = 0.5         # and stands this far proud of what it wraps
 
 SEGMENTS = 96
 
 
 def face_outline(shape):
-    """Convex outline of the face: hull of the four corner circles."""
+    """Face outline: rounded head, V taper, and filleted neck down to the handle."""
     s = shape
-    corners = []
+    hw = s["width"] / 2
+    parts = []
     for sx in (-1, 1):
-        corners.append(CrossSection.circle(s["top_r"], SEGMENTS).translate(
-            (sx * (s["width"] / 2 - s["top_r"]), s["length"] - s["top_r"])))
-        corners.append(CrossSection.circle(s["bottom_r"], SEGMENTS).translate(
-            (sx * (s["bottom_width"] / 2 - s["bottom_r"]),
-             s["handle"] + s["bottom_r"])))
-    return CrossSection.batch_hull(corners)
+        parts.append(CrossSection.circle(s["top_r"], SEGMENTS).translate(
+            (sx * (hw - s["top_r"]), s["length"] - s["top_r"])))
+        parts.append(CrossSection.circle(s["shoulder_r"], SEGMENTS).translate(
+            (sx * (hw - s["shoulder_r"]), s["shoulder_y"])))
+        parts.append(CrossSection.circle(1.0, 16).translate(
+            (sx * (s["v_hw"] - 1), s["v_y"])))
+    head = CrossSection.batch_hull(parts)
+    neck = CrossSection.square(
+        (2 * s["neck_hw"], s["v_y"] - s["handle"] + 30)).translate(
+        (-s["neck_hw"], s["handle"] - 20))
+    # Closing (grow, then shrink) fillets the concave corners at the neck.
+    shape2d = (head + neck).offset(s["fillet"]).offset(-s["fillet"])
+    keep = CrossSection.square((1000, s["length"])).translate(
+        (-500, s["handle"]))
+    return (shape2d ^ keep).simplify(0.02)
 
 
-def rounded_slab(outline, z0, z1, radius, steps=6):
-    """Extrude a convex outline from z0 to z1 with rounded top and bottom edges."""
-    pts = []
-    for i in range(steps + 1):
-        a = (math.pi / 2) * i / steps
-        inset = radius * (1 - math.cos(a))
-        rise = radius * (1 - math.sin(a))
-        ring = np.vstack(outline.offset(-inset).to_polygons())
-        for z in (z0 + rise, z1 - rise):
-            pts.append(np.column_stack([ring, np.full(len(ring), z)]))
-    return Manifold.hull_points(np.vstack(pts))
+def throat_plan(shape, outline):
+    """Top view the grip-to-face blend may fill: grip plus face, filleted.
+
+    The face part is pulled in by THROAT_CLEARANCE so the blend's cut sides
+    stay on the face's flat zone; cutting through the rounded edge leaves
+    zero-area slivers that break the STL.
+    """
+    grip = CrossSection.square((GRIP_WIDTH, shape["handle"] + 1)).translate(
+        (-GRIP_WIDTH / 2, 0))
+    face = outline.offset(-THROAT_CLEARANCE)
+    return (face + grip).offset(GRIP_FILLET).offset(-GRIP_FILLET)
+
+
+def rounded_slab(outline, z0, z1, radius):
+    """Extrude an outline from z0 to z1 with rounded top and bottom edges."""
+    core = Manifold.extrude(outline.offset(-radius), z1 - z0 - 2 * radius)
+    slab = core.translate((0, 0, z0 + radius)).minkowski_sum(
+        Manifold.sphere(radius, 12))
+    # The Minkowski sum leaves coincident vertices and zero-area slivers that
+    # break the STL once vertices are merged; collapse them.
+    return slab.simplify(0.01)
 
 
 def hexagon(cx, cy, across_flats):
@@ -120,31 +154,62 @@ def octagon_ring(y, width, depth, chamfer, zc):
     return [(x, y, zc + z) for x, z in xz]
 
 
-def handle(shape, flat_bottom):
-    """Butt cap, grip and throat, as a union of convex hulls of octagon rings."""
+def width_at(region, y):
+    x0, _, x1, _ = (region ^ CrossSection.square((1000, 0.2)).translate(
+        (-500, y - 0.1))).bounds()
+    return x1 - x0
+
+
+def handle(shape, flat_bottom, outline, plan):
+    """Butt cap, grip, throat and collar, as a union of convex hulls of octagon rings.
+
+    The throat (grip-to-face blend) is lofted through rings no wider than
+    `plan`, so it follows the curved neck instead of sticking out past it.
+    The neck is wider than the grip where the face starts; a collar band
+    wraps that step, as on production paddles.
+    """
     def ring(y, w, d, c):
         zc = d / 2 if flat_bottom else 0.0
         return octagon_ring(y, w, d, c, zc)
 
+    grip_end = shape["handle"] - THROAT_START
+    throat_end = shape["handle"] + THROAT_REACH
+
+    def throat_dims(y):
+        t = (y - grip_end) / (throat_end - grip_end)
+        ease = (1 - math.cos(math.pi * t)) / 2
+        return (min(GRIP_WIDTH + (THROAT_WIDTH - GRIP_WIDTH) * t,
+                    width_at(plan, y)),
+                GRIP_DEPTH + (THICKNESS - GRIP_DEPTH) * ease,
+                GRIP_CHAMFER + (2.0 - GRIP_CHAMFER) * ease)
+
     g = (GRIP_WIDTH, GRIP_DEPTH, GRIP_CHAMFER)
     cap = (GRIP_WIDTH + 5, GRIP_DEPTH + 4.5, GRIP_CHAMFER + 1.5)
-    grip_end = shape["handle"] - THROAT_START
     stations = [
         [ring(0, GRIP_WIDTH + 2, GRIP_DEPTH + 2, GRIP_CHAMFER + 2),
          ring(3, *cap), ring(9, *cap)],                          # butt cap
         [ring(9, *cap), ring(17, *g)],                            # cap taper
         [ring(17, *g), ring(grip_end, *g)],                       # grip
-        [ring(grip_end, *g),
-         ring(shape["handle"] + THROAT_REACH, THROAT_WIDTH, THICKNESS, 2.0)],
     ]
+    throat = [ring(y, *throat_dims(y))
+              for y in np.linspace(grip_end, throat_end, THROAT_STEPS + 1)]
+    stations += [[a, b] for a, b in zip(throat, throat[1:])]
+
+    # The collar strictly contains the grip, throat and face where it sits,
+    # so its surfaces never touch theirs.
+    y0 = shape["handle"] - COLLAR_BELOW
+    y1 = shape["handle"] + COLLAR_ABOVE
+    width = width_at(outline, y1) + 2 * COLLAR_PROUD
+    stations.append([ring(y, width, throat_dims(y)[1] + 2 * COLLAR_PROUD, 2.0)
+                     for y in (y0, y1)])
     return Manifold.batch_boolean(
         [Manifold.hull_points(np.vstack(s)) for s in stations], OpType.Add)
 
 
-def throat_footprint(shape):
+def throat_footprint(shape, plan):
     y0 = shape["handle"] - THROAT_START
     y1 = shape["handle"] + THROAT_REACH
-    return CrossSection.hull_points(np.array([
+    return plan ^ CrossSection.hull_points(np.array([
         (-GRIP_WIDTH / 2, y0), (GRIP_WIDTH / 2, y0),
         (-THROAT_WIDTH / 2, y1), (THROAT_WIDTH / 2, y1)]))
 
@@ -152,13 +217,14 @@ def throat_footprint(shape):
 def build(shape, flat_bottom=True):
     z0 = 0.0 if flat_bottom else -THICKNESS / 2
     outline = face_outline(shape)
+    plan = throat_plan(shape, outline)
     slab = rounded_slab(outline, z0, z0 + THICKNESS, EDGE_RADIUS)
 
     region = (outline.offset(-RIM_WIDTH)
-              - throat_footprint(shape).offset(RIM_WIDTH))
+              - throat_footprint(shape, plan).offset(RIM_WIDTH))
     holes = Manifold.extrude(honeycomb_holes(region), THICKNESS + 2).translate(
         (0, 0, z0 - 1))
-    return (slab - holes) + handle(shape, flat_bottom)
+    return (slab - holes) + handle(shape, flat_bottom, outline, plan)
 
 
 def write_stl(solid, path):
