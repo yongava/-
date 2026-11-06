@@ -7,9 +7,9 @@ grip with a flared butt cap.  Everything is a single watertight solid,
 exported as binary STL.  All dimensions are in millimetres.
 
     pip install manifold3d numpy
-    python3 generate_paddle.py --shape elongated            # flat bottom
-    python3 generate_paddle.py --shape hybrid --grip symmetric
-    python3 generate_paddle.py --all                        # every variant
+    python3 generate_paddle.py --shape elongated        # grip centred on the face
+    python3 generate_paddle.py --shape hybrid --grip flat
+    python3 generate_paddle.py --all                    # every shape
 """
 
 import argparse
@@ -21,28 +21,35 @@ from manifold3d import CrossSection, Manifold, OpType
 
 INCH = 25.4
 
+HANDLE_LENGTH = 6.0 * INCH  # butt cap to the neck, where the face starts
+
 # Head shapes, sized after current production paddles.  USA Pickleball allows
 # length <= 17 in and length + width <= 24 in; hybrid and elongated shapes sit
-# just under that 24 in total.
+# just under that 24 in total, so a longer handle shortens the face.
 #
 # The outline is the hull of the top corner circles (`top_r`), the shoulder
 # circles (`shoulder_r`, centred at `shoulder_y`) and a narrow tip at `v_y`,
 # so the lower face tapers in a V.  A neck `neck_hw` wide (half-width) joins
 # that V to the handle through concave fillets of radius `fillet`.  `handle`
-# runs from the butt cap to the neck.
+# runs from the butt cap to the neck; the taper is placed from the neck so it
+# keeps its shape whatever the handle length.
 SHAPES = {
-    # Classic shape, e.g. Selkirk Epic 15.75 x 8 in, 5.25 in handle.
-    "standard": dict(length=400.0, width=197.0, handle=133.0, top_r=52.0,
-                     shoulder_y=208.0, shoulder_r=52.0, v_y=135.0, v_hw=10.0,
+    # Classic shape, e.g. Selkirk Epic 15.75 x 8 in.
+    "standard": dict(length=400.0, width=197.0, handle=HANDLE_LENGTH,
+                     top_r=52.0, shoulder_y=HANDLE_LENGTH + 75.0,
+                     shoulder_r=52.0, v_y=HANDLE_LENGTH + 2.0, v_hw=10.0,
                      neck_hw=20.0, fillet=36.0),
-    # e.g. RPM Q2 Hybrid Flat Top 16.25 x 7.7 in, 5.5 in handle.
-    "hybrid": dict(length=412.5, width=195.5, handle=137.0, top_r=62.0,
-                   shoulder_y=222.0, shoulder_r=55.0, v_y=139.0, v_hw=10.0,
+    # e.g. RPM Q2 Hybrid Flat Top 16.25 x 7.7 in.
+    "hybrid": dict(length=412.5, width=195.5, handle=HANDLE_LENGTH,
+                   top_r=62.0, shoulder_y=HANDLE_LENGTH + 85.0,
+                   shoulder_r=55.0, v_y=HANDLE_LENGTH + 2.0, v_hw=10.0,
                    neck_hw=20.0, fillet=38.0),
-    # Fitted to a photo of a JOOLA Perseus (0.9 mm RMS); compare RPM Friction
-    # Pro Elongated 16.5 x 7.5 in and Selkirk Invikta 16.5 x 7.375 in.
-    "elongated": dict(length=419.0, width=190.0, handle=137.0, top_r=70.0,
-                      shoulder_y=228.0, shoulder_r=55.0, v_y=139.0, v_hw=10.0,
+    # Corners and taper fitted to a photo of a JOOLA Perseus (0.9 mm RMS);
+    # compare RPM Friction Pro Elongated 16.5 x 7.5 in and Selkirk Invikta
+    # 16.5 x 7.375 in.
+    "elongated": dict(length=419.0, width=190.0, handle=HANDLE_LENGTH,
+                      top_r=70.0, shoulder_y=HANDLE_LENGTH + 91.0,
+                      shoulder_r=55.0, v_y=HANDLE_LENGTH + 2.0, v_hw=10.0,
                       neck_hw=20.0, fillet=38.0),
 }
 
@@ -244,9 +251,9 @@ def write_stl(solid, path):
     return len(tris)
 
 
-def min_square_bed(solid):
-    """Smallest square bed the footprint fits on, trying every rotation."""
-    pts = np.asarray(solid.to_mesh().vert_properties)[:, :2]
+def min_square_bed(solid, axes=(0, 1)):
+    """Smallest square bed the footprint on `axes` fits, trying every rotation."""
+    pts = np.asarray(solid.to_mesh().vert_properties)[:, list(axes)]
     best = (float("inf"), 0)
     for deg in range(0, 180):
         a = math.radians(deg)
@@ -267,8 +274,12 @@ def centroid_y(solid):
     return float((vol * (a[:, 1] + b[:, 1] + c[:, 1]) / 4).sum() / vol.sum())
 
 
-def stats(solid, shape, density=1.25, handle_fill=0.35):
-    """Key figures; mass assumes a solid face and a partly filled handle."""
+def stats(solid, shape, on_edge, density=1.25, handle_fill=0.35):
+    """Key figures; mass assumes a solid face and a partly filled handle.
+
+    `on_edge`: the paddle prints standing on its long side edge (centred
+    grip) rather than lying flat, so the bed holds its length x thickness.
+    """
     x0, y0, z0, x1, y1, z1 = solid.bounding_box()
     big = 1000.0
     grip = solid ^ Manifold.cube((big, shape["handle"], big)).translate(
@@ -280,7 +291,8 @@ def stats(solid, shape, density=1.25, handle_fill=0.35):
     grip_g = density * handle_fill * grip_cm3
     mass = face_g + grip_g
     balance = (face_g * centroid_y(face) + grip_g * centroid_y(grip)) / mass
-    bed, bed_deg = min_square_bed(solid)
+    bed, bed_deg = min_square_bed(solid, (1, 2) if on_edge else (0, 1))
+    print_height = (x1 - x0) if on_edge else (z1 - z0)
     return dict(
         size=(x1 - x0, y1 - y0, z1 - z0),
         length_in=shape["length"] / INCH, width_in=shape["width"] / INCH,
@@ -288,7 +300,8 @@ def stats(solid, shape, density=1.25, handle_fill=0.35):
         total_in=(shape["length"] + shape["width"]) / INCH,
         cells=solid.genus(), face_cm3=face_cm3, grip_cm3=grip_cm3,
         mass_g=mass, mass_oz=mass / 28.3495, balance_mm=balance,
-        bed=bed, bed_deg=bed_deg, density=density, handle_fill=handle_fill)
+        bed=bed, bed_deg=bed_deg, on_edge=on_edge, print_height=print_height,
+        density=density, handle_fill=handle_fill)
 
 
 def report(st):
@@ -304,36 +317,37 @@ def report(st):
           f"@ {st['density']} g/cm3, handle {st['handle_fill']:.0%} filled")
     print(f"  balance     : {st['balance_mm']:.0f} mm "
           f"({st['balance_mm'] / INCH:.2f} in) from the butt")
-    print(f"  square bed  : >= {st['bed']:.0f} mm (rotated {st['bed_deg']} deg)")
+    pose = "on its edge" if st["on_edge"] else "flat"
+    print(f"  print       : {pose}, square bed >= {st['bed']:.0f} mm "
+          f"(rotated {st['bed_deg']} deg), {st['print_height']:.0f} mm tall")
 
 
 def output_name(shape_name, grip):
-    suffix = "_symmetric" if grip == "symmetric" else ""
+    suffix = "_flat" if grip == "flat" else ""
     return os.path.join("stl", f"pickleball_paddle_{shape_name}{suffix}.stl")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--shape", choices=list(SHAPES), default="elongated")
-    ap.add_argument("--grip", choices=["flat", "symmetric"], default="flat",
-                    help="flat: grip flush with the face's underside, prints "
-                         "without supports; symmetric: grip centred on the face")
-    ap.add_argument("--all", action="store_true",
-                    help="write every shape in both grip styles")
+    ap.add_argument("--grip", choices=["centered", "flat"], default="centered",
+                    help="centered: face sits in the middle of the grip, print "
+                         "on its edge; flat: grip flush with the face's "
+                         "underside, prints flat without supports")
+    ap.add_argument("--all", action="store_true", help="write every shape")
     ap.add_argument("-o", "--output")
     args = ap.parse_args()
 
-    jobs = ([(s, g) for s in SHAPES for g in ("flat", "symmetric")]
-            if args.all else [(args.shape, args.grip)])
-    for shape_name, grip in jobs:
+    for shape_name in SHAPES if args.all else [args.shape]:
         out = (args.output if args.output and not args.all
-               else output_name(shape_name, grip))
+               else output_name(shape_name, args.grip))
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         shape = SHAPES[shape_name]
-        solid = build(shape, flat_bottom=grip == "flat")
+        flat = args.grip == "flat"
+        solid = build(shape, flat_bottom=flat)
         tris = write_stl(solid, out)
         print(f"{out}: {tris} triangles")
-        report(stats(solid, shape))
+        report(stats(solid, shape, on_edge=not flat))
 
 
 if __name__ == "__main__":
