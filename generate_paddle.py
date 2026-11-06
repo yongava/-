@@ -6,10 +6,11 @@ hexagonal lattice held by a solid rim (edge guard), joined to an octagonal
 grip with a flared butt cap.  Everything is a single watertight solid,
 exported as binary STL.  All dimensions are in millimetres.
 
-    pip install manifold3d numpy
+    pip install manifold3d numpy shapely
     python3 generate_paddle.py --shape elongated        # grip centred on the face
     python3 generate_paddle.py --shape hybrid --grip flat
     python3 generate_paddle.py --all                    # every shape
+    python3 generate_paddle.py --all --pattern diamond --wall 1.0 --side-pad 8
 """
 
 import argparse
@@ -18,6 +19,10 @@ import os
 
 import numpy as np
 from manifold3d import CrossSection, Manifold, OpType
+from shapely.geometry import LineString
+from shapely.geometry import box as shapely_box
+from shapely.geometry.polygon import orient
+from shapely.ops import polygonize, unary_union
 
 INCH = 25.4
 
@@ -32,36 +37,42 @@ HANDLE_LENGTH = 6.0 * INCH  # butt cap to the neck, where the face starts
 # so the lower face tapers in a V.  A neck `neck_hw` wide (half-width) joins
 # that V to the handle through concave fillets of radius `fillet`.  `handle`
 # runs from the butt cap to the neck; the taper is placed from the neck so it
-# keeps its shape whatever the handle length.
+# keeps its shape whatever the handle length.  `side_pad` widens the rim at
+# 3 and 9 o'clock (perimeter weighting); it brings each shape to about 224 g.
 SHAPES = {
     # Classic shape, e.g. Selkirk Epic 15.75 x 8 in.
     "standard": dict(length=400.0, width=197.0, handle=HANDLE_LENGTH,
                      top_r=52.0, shoulder_y=HANDLE_LENGTH + 75.0,
                      shoulder_r=52.0, v_y=HANDLE_LENGTH + 2.0, v_hw=10.0,
-                     neck_hw=20.0, fillet=36.0),
+                     neck_hw=20.0, fillet=36.0, side_pad=7.0),
     # e.g. RPM Q2 Hybrid Flat Top 16.25 x 7.7 in.
     "hybrid": dict(length=412.5, width=195.5, handle=HANDLE_LENGTH,
                    top_r=62.0, shoulder_y=HANDLE_LENGTH + 85.0,
                    shoulder_r=55.0, v_y=HANDLE_LENGTH + 2.0, v_hw=10.0,
-                   neck_hw=20.0, fillet=38.0),
+                   neck_hw=20.0, fillet=38.0, side_pad=7.0),
     # Corners and taper fitted to a photo of a JOOLA Perseus (0.9 mm RMS);
     # compare RPM Friction Pro Elongated 16.5 x 7.5 in and Selkirk Invikta
     # 16.5 x 7.375 in.
     "elongated": dict(length=419.0, width=190.0, handle=HANDLE_LENGTH,
                       top_r=70.0, shoulder_y=HANDLE_LENGTH + 91.0,
                       shoulder_r=55.0, v_y=HANDLE_LENGTH + 2.0, v_hw=10.0,
-                      neck_hw=20.0, fillet=38.0),
+                      neck_hw=20.0, fillet=38.0, side_pad=11.0),
 }
 
 # Face
 THICKNESS = 13.0           # core thickness
-RIM_WIDTH = 4.5            # solid edge guard around the honeycomb
+RIM_WIDTH = 4.5            # solid edge guard around the lattice
 EDGE_RADIUS = 2.0          # rounding on the outer edge of the rim
 
-# Honeycomb (hexagonal cells running straight through the thickness)
-CELL_PITCH = 15.0          # centre-to-centre distance across flats
-WALL = 1.0                 # wall thickness between cells
+# Lattice (open cells running straight through the thickness).  A light
+# lattice in a heavy frame gives the biggest sweet spot (see
+# analyze_paddle.py): thin walls inside, solid pads at 3 and 9 o'clock.
+CELL_PITCH = 15.0          # honeycomb centre-to-centre distance across flats
+WALL = 0.8                 # wall thickness between cells: two 0.4 mm lines
 MIN_HOLE_WIDTH = 2.5       # clipped cells narrower than this stay solid
+RIB_DENSITY = 2 / CELL_PITCH  # rib length per face area (1/mm); sets weight
+PATTERNS = ("honeycomb", "square", "diamond", "triangle")
+PAD_RAMP = 20.0            # side pads ease in and out over this length
 
 # Grip: octagon, about 108 mm (4.25 in) around
 GRIP_WIDTH = 36.0
@@ -126,32 +137,86 @@ def rounded_slab(outline, z0, z1, radius):
     return slab.simplify(0.01)
 
 
-def hexagon(cx, cy, across_flats):
-    """Pointy-top hexagon (flat sides face the paddle's left and right edges)."""
-    r = across_flats / math.sqrt(3)
-    return CrossSection([[(cx + r * math.cos(math.radians(90 + 60 * k)),
-                           cy + r * math.sin(math.radians(90 + 60 * k)))
-                          for k in range(6)]])
+def pattern_lines(pattern, box, cy, density=RIB_DENSITY):
+    """Rib centre-lines of `pattern` covering `box`, symmetric about x = 0.
+
+    Every pattern lays the same rib length per unit area (`density`), so at
+    equal wall thickness they weigh the same.
+    """
+    x0, y0, x1, y1 = box
+    reach = math.hypot(x1 - x0, y1 - y0)
+    c0 = np.array([0.0, cy])
+
+    def family(angle, spacing):
+        d = np.array([math.cos(math.radians(angle)), math.sin(math.radians(angle))])
+        n = np.array([-d[1], d[0]])
+        count = int(reach / spacing) + 2
+        return [LineString([c0 + k * spacing * n - reach * d,
+                            c0 + k * spacing * n + reach * d])
+                for k in range(-count, count + 1)]
+
+    if pattern == "honeycomb":
+        # Pointy-top cells, flat sides facing the paddle's edges.
+        p = 2 / density
+        r = p / math.sqrt(3)
+        rows = int(reach / (p * math.sqrt(3) / 2)) + 2
+        cols = int(reach / p) + 2
+        ring = [(r * math.cos(math.radians(90 + 60 * k)),
+                 r * math.sin(math.radians(90 + 60 * k))) for k in range(7)]
+        lines = []
+        for j in range(-rows, rows + 1):
+            for i in range(-cols, cols + 1):
+                cx = i * p + (p / 2 if j % 2 else 0.0)
+                cyy = cy + j * p * math.sqrt(3) / 2
+                lines.append(LineString([(cx + u, cyy + v) for u, v in ring]))
+        return lines
+    if pattern == "square":
+        return family(0, 2 / density) + family(90, 2 / density)
+    if pattern == "diamond":
+        return family(45, 2 / density) + family(-45, 2 / density)
+    if pattern == "triangle":
+        # One rib family runs along the paddle, the others at +-60 degrees.
+        h = 3 / density
+        return family(90, h) + family(30, h) + family(-30, h)
+    raise ValueError(f"unknown pattern {pattern!r}")
 
 
-def honeycomb_holes(region):
-    """Hexagonal holes clipped to `region`, centred on the paddle's axis."""
+def uniform_wall(x, y):
+    return WALL
+
+
+def lattice(region, pattern="honeycomb", wall=uniform_wall):
+    """Holes and rib centre-line segments for `pattern` inside `region`.
+
+    Holes are the faces of the rib network, each pulled in by half the wall
+    thickness at its centre, so `wall(x, y)` can grade the walls across the
+    face.  Returns the holes (a CrossSection) and the noded rib segments as
+    an (n, 2, 2) array of end points with an (n,) array of thicknesses.
+    """
     x0, y0, x1, y1 = region.bounds()
-    cy = (y0 + y1) / 2
-    row_pitch = CELL_PITCH * math.sqrt(3) / 2
-    cells = []
-    rows = int((y1 - y0) / row_pitch / 2) + 2
-    cols = int((x1 - x0) / CELL_PITCH / 2) + 2
-    for j in range(-rows, rows + 1):
-        shift = CELL_PITCH / 2 if j % 2 else 0.0
-        for i in range(-cols, cols + 1):
-            cells.append(hexagon(i * CELL_PITCH + shift, cy + j * row_pitch,
-                                 CELL_PITCH - WALL))
-    clipped = CrossSection.compose(cells) ^ region
+    margin = 40.0
+    box = (x0 - margin, y0 - margin, x1 + margin, y1 + margin)
+    noded = unary_union(pattern_lines(pattern, box, (y0 + y1) / 2)).intersection(
+        shapely_box(*box))
+    contours = []
+    for face in polygonize(noded):
+        c = face.centroid
+        hole = face.buffer(-wall(c.x, c.y) / 2, join_style="mitre")
+        if not hole.is_empty and hole.geom_type == "Polygon":
+            contours.append(np.asarray(orient(hole, 1.0).exterior.coords)[:-1])
+    holes = CrossSection(contours) ^ region
     # Drop slivers left where cells are cut by the rim; they print badly.
-    keep = [p for p in clipped.decompose()
+    keep = [p for p in holes.decompose()
             if not p.offset(-MIN_HOLE_WIDTH / 2).is_empty()]
-    return CrossSection.compose(keep)
+
+    segments = []
+    for line in getattr(noded, "geoms", [noded]):
+        pts = np.asarray(line.coords)
+        segments += [pts[i:i + 2] for i in range(len(pts) - 1)]
+    segments = np.array(segments)
+    mid = segments.mean(axis=1)
+    return (CrossSection.compose(keep), segments,
+            np.array([wall(x, y) for x, y in mid]))
 
 
 def octagon_ring(y, width, depth, chamfer, zc):
@@ -221,16 +286,43 @@ def throat_footprint(shape, plan):
         (-THROAT_WIDTH / 2, y1), (THROAT_WIDTH / 2, y1)]))
 
 
-def build(shape, flat_bottom=True):
-    z0 = 0.0 if flat_bottom else -THICKNESS / 2
+def side_pads(shape, width):
+    """Lattice limit that widens the rim by up to `width` along the straight
+    sides (3 and 9 o'clock), easing in and out over PAD_RAMP."""
+    s = shape
+    y0 = s["shoulder_y"]                       # sides run straight from here
+    y1 = s["length"] - s["top_r"]              # ...to the top corners
+    ys = np.linspace(y0, y1, 60)
+    t = np.clip(np.minimum(ys - y0, y1 - ys) / PAD_RAMP, 0, 1)
+    pad = width * (3 * t**2 - 2 * t**3)
+    x = s["width"] / 2 - RIM_WIDTH - pad
+    pts = ([(500.0, -500.0), (500.0, y0)] + [(xi, yi) for xi, yi in zip(x, ys)]
+           + [(500.0, y1), (500.0, 2000.0), (-500.0, 2000.0), (-500.0, y1)]
+           + [(-xi, yi) for xi, yi in zip(x[::-1], ys[::-1])]
+           + [(-500.0, y0), (-500.0, -500.0)])
+    return CrossSection([pts])
+
+
+def face_regions(shape, side_pad=None):
+    """Outline, throat plan, lattice region and the solid area at the throat."""
+    if side_pad is None:
+        side_pad = shape["side_pad"]
     outline = face_outline(shape)
     plan = throat_plan(shape, outline)
-    slab = rounded_slab(outline, z0, z0 + THICKNESS, EDGE_RADIUS)
+    throat_solid = throat_footprint(shape, plan).offset(RIM_WIDTH) ^ outline
+    region = outline.offset(-RIM_WIDTH) - throat_solid
+    if side_pad > 0:
+        region = region ^ side_pads(shape, side_pad)
+    return outline, plan, region, throat_solid
 
-    region = (outline.offset(-RIM_WIDTH)
-              - throat_footprint(shape, plan).offset(RIM_WIDTH))
-    holes = Manifold.extrude(honeycomb_holes(region), THICKNESS + 2).translate(
-        (0, 0, z0 - 1))
+
+def build(shape, flat_bottom=True, pattern="honeycomb", wall=uniform_wall,
+          side_pad=None):
+    z0 = 0.0 if flat_bottom else -THICKNESS / 2
+    outline, plan, region, _ = face_regions(shape, side_pad)
+    slab = rounded_slab(outline, z0, z0 + THICKNESS, EDGE_RADIUS)
+    holes = Manifold.extrude(lattice(region, pattern, wall)[0],
+                             THICKNESS + 2).translate((0, 0, z0 - 1))
     return (slab - holes) + handle(shape, flat_bottom, outline, plan)
 
 
@@ -310,7 +402,7 @@ def report(st):
     print(f"  inches      : {st['length_in']:.2f} x {st['width_in']:.2f} in, "
           f"handle {st['handle_in']:.2f} in")
     print(f"  length+width: {st['total_in']:.2f} in (limit 24 in)")
-    print(f"  honeycomb   : {st['cells']} cells")
+    print(f"  lattice     : {st['cells']} cells")
     print(f"  volume      : face {st['face_cm3']:.0f} cm3, "
           f"handle {st['grip_cm3']:.0f} cm3")
     print(f"  est. mass   : {st['mass_g']:.0f} g ({st['mass_oz']:.1f} oz) "
@@ -322,29 +414,39 @@ def report(st):
           f"(rotated {st['bed_deg']} deg), {st['print_height']:.0f} mm tall")
 
 
-def output_name(shape_name, grip):
-    suffix = "_flat" if grip == "flat" else ""
+def output_name(shape_name, grip, pattern):
+    suffix = ("" if pattern == "honeycomb" else f"_{pattern}") + (
+        "_flat" if grip == "flat" else "")
     return os.path.join("stl", f"pickleball_paddle_{shape_name}{suffix}.stl")
 
 
 def main():
+    global WALL
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--shape", choices=list(SHAPES), default="elongated")
     ap.add_argument("--grip", choices=["centered", "flat"], default="centered",
                     help="centered: face sits in the middle of the grip, print "
                          "on its edge; flat: grip flush with the face's "
                          "underside, prints flat without supports")
+    ap.add_argument("--pattern", choices=PATTERNS, default="honeycomb")
+    ap.add_argument("--wall", type=float, default=WALL,
+                    help="lattice wall thickness (mm)")
+    ap.add_argument("--side-pad", type=float,
+                    help="extra rim width (mm) along the straight sides; "
+                         "defaults to the shape's own")
     ap.add_argument("--all", action="store_true", help="write every shape")
     ap.add_argument("-o", "--output")
     args = ap.parse_args()
+    WALL = args.wall
 
     for shape_name in SHAPES if args.all else [args.shape]:
         out = (args.output if args.output and not args.all
-               else output_name(shape_name, args.grip))
+               else output_name(shape_name, args.grip, args.pattern))
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         shape = SHAPES[shape_name]
         flat = args.grip == "flat"
-        solid = build(shape, flat_bottom=flat)
+        solid = build(shape, flat_bottom=flat, pattern=args.pattern,
+                      side_pad=args.side_pad)
         tris = write_stl(solid, out)
         print(f"{out}: {tris} triangles")
         report(stats(solid, shape, on_edge=not flat))
