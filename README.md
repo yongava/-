@@ -19,9 +19,12 @@
 | `stl/pickleball_paddle_standard.stl` | ทรงมาตรฐาน |
 | `stl/pickleball_paddle_hybrid.stl` | ทรง hybrid |
 | `stl/pickleball_paddle_elongated.stl` | ทรง elongated |
+| `stl/pickleball_paddle_<ทรง>_flat16.stl` | แบบพิมพ์นอน: หน้าไม้หนา 16 mm เท่าด้าม ช่องรังผึ้ง 18 mm (ดู [16 mm พิมพ์นอน](#16-mm-พิมพ์นอน)) |
 | `stl/pickleball_paddle_elongated_diamond.stl` | ทางเลือก: ทรง elongated โครงลายข้าวหลามตัด ผนัง 1.0 mm |
-| `generate_paddle.py` | สคริปต์สร้างโมเดล ปรับค่าได้จาก `HANDLE_LENGTH`, `SHAPES` และค่าคงที่ที่ส่วนบนของไฟล์ |
+| `generate_paddle.py` | สคริปต์สร้างโมเดล ปรับค่าได้จาก `HANDLE_LENGTH`, `SHAPES`, `LAY_FLAT` และค่าคงที่ที่ส่วนบนของไฟล์ |
 | `analyze_paddle.py` | สคริปต์คำนวณน้ำหนัก swing weight, twist weight และแผนที่ sweet spot |
+| `optimize_flat.py` | วนหาแบบพิมพ์นอนที่ดีที่สุดที่ความหนาที่กำหนด |
+| `spin_model.py` | แบบจำลองสปินของลูกที่กระทบหน้าไม้แบบเฉียง เทียบผิวหน้าแบบต่าง ๆ |
 
 ## ทรง
 
@@ -125,10 +128,61 @@
 - หน้าไม้หนาเท่าด้ามทำให้พิมพ์นอนได้โดยไม่ต้องใช้ซัพพอร์ตเลย และผนังทุกเส้นวิ่งตามแนวเส้นพลาสติก จึงแข็งแรงกว่ามาก
   แข็งขึ้น 20–30% และ sweet spot ใกล้เคียงเดิม แต่ด้ามแบนกว่าเดิม (เส้นรอบวงเท่าเดิม 108 mm) ช่องใหญ่ขึ้นเป็น 18–22 mm และต้องใช้ฐานพิมพ์ราว 350 mm
 
+### 16 mm พิมพ์นอน
+
+ภาพความเร็วสูงของ John Kew แสดงว่าลูกแนบหน้าไม้ไม่เกิน 2 ms
+จึงให้น้ำหนักกับผลที่ 1–2 ms เป็นหลัก ทุกแบบถูกปรับขอบด้านข้างให้หนัก 225 g เท่ากัน
+
+ถ้าแค่เปลี่ยนเป็น 16 mm โดยใช้โครงเดิม (ช่อง 15 mm ผนัง 0.8 mm) ไม้จะแข็งขึ้น 24% แต่ sweet spot เล็กลง
+(19 / 36 / 53 cm² เทียบกับ 34 / 40 / 60 cm² ของแบบ 13 mm) เพราะโครงที่ลึกขึ้นแข็งขึ้นและเสียแรงดีดไป
+จึงวนหาแบบที่ดีที่สุดที่ 16 mm (`optimize_flat.py`) โดยลอง 5 ลาย ช่อง 13–19 mm ผนัง 0.8–1.0 mm ขอบ 3–6.5 mm
+
+- ลายข้าวหลามตัด สี่เหลี่ยม และสามเหลี่ยมตกเกณฑ์เกือบทั้งหมด เพราะผนังยาวจะโก่งเมื่อตีลูกแรง (เกณฑ์คือรับแรงได้อย่างน้อย 3 เท่าของลูกตบ 800 N)
+- แปดเหลี่ยมผ่านเกณฑ์แต่ sweet spot เล็กกว่ารังผึ้ง
+- ช่องใหญ่ขึ้น (โครงเบาลง) แล้วย้ายน้ำหนักไปที่ขอบ ยิ่งดี จนถึงช่อง 18 mm ช่อง 19 mm ผนังจะเริ่มโก่ง
+- ลองเลียนแบบไม้ foam core ด้วยวงผนังบางรอบขอบ (เหมือน floating core / EVA รอบขอบ) ไม่ช่วยเลย (35/52/62 เทียบ 34/52/61 cm²) และทำให้ผนังรับแรงได้แค่ 1.8 เท่า
+  ส่วนวงผนังหนาก็แย่ลง เพราะดึงน้ำหนักออกจากขอบด้านข้าง
+
+ผลที่ดีที่สุด: รังผึ้ง ช่อง 18 mm ผนัง 0.8 mm ด้าม 42.7 × 16 mm (เส้นรอบวง 108 mm)
+
+| ทรง (225 g) | ขอบ / side pad | Swing weight | Twist weight | ความถี่โค้งงอ / บิด | Sweet spot 1/2/4 ms | เทียบ 13 mm ตั้งสันข้าง |
+| --- | --- | --- | --- | --- | --- | --- |
+| มาตรฐาน | 4.5 / 5.4 mm | 97.5 | 7.50 | 77 / 99 Hz | 31 / 46 / 58 cm² | 28 / 36 / 54 cm² |
+| Hybrid | 4.5 / 5.7 mm | 104.3 | 7.35 | 73 / 109 Hz | 31 / 46 / 60 cm² | 28 / 36 / 56 cm² |
+| Elongated | 5.5 / 3.8 mm | 109.3 | 6.77 | 72 / 117 Hz | 34 / 52 / 61 cm² | 34 / 39 / 58 cm² |
+
+แบบ 16 mm พิมพ์นอนดีกว่าแบบ 13 mm ในทุกทรง: sweet spot ที่ 2 ms ใหญ่ขึ้น 28–33% twist weight สูงขึ้น ไม้แข็งขึ้น
+และผนังทุกเส้นพิมพ์ตามแนวเส้นพลาสติก ผลนี้ยังคงอยู่เมื่อลองการหน่วง 5%, E 1.6 GPa และลูกที่เด้งได้ 0.5 (ที่ 1–2 ms)
+ข้อแลกคือ swing weight สูงขึ้นราว 10 ด้ามแบนกว่าเดิม ช่องกว้าง 17 mm ผนังรับแรงได้ 3.3 เท่า (แบบ 13 mm ได้ 5.6 เท่า)
+และต้องใช้ฐานพิมพ์ราว 350–400 mm
+
+### ผิวหน้าสำหรับสปินสูงสุด
+
+ข้อมูลจาก John Kew: เมื่อทำให้ grit เท่ากันทุกไม้ ไม้แข็งกับไม้นุ่มต่างกันแค่ราว 250 rpm แต่เอา grit ออกเสียไปถึง 1,000 rpm
+แบบจำลอง `spin_model.py` (ลูกกลวงกระทบหน้าไม้แบบเฉียง มีแรงเสียดทาน การยึดเกาะ และการดีดกลับด้านข้าง)
+จำลองแท่นทดสอบของ John Kew คือลูก 70 mph ใส่ไม้ที่เอียง 30° โดยปรับให้ค่าแรงเสียดทาน 0.20 ได้ราว 2,000 rpm เท่าไม้ทั่วไป
+
+| ผิว | แรงเสียดทาน | สปินที่ 70 mph | สปินที่ 40 mph | ลูกไถล |
+| --- | --- | --- | --- | --- |
+| ขอบผนัง PETG ที่พิมพ์ออกมา (ประมาณ) | 0.22 | 2,200 rpm | 1,260 rpm | 28 mm |
+| Grit บนสันผนัง | 0.40 | 4,000 rpm | 2,290 rpm | 17 mm |
+| ตาข่ายถักที่เชื่อมจุดไขว้ | 0.50 | 4,890 rpm | 2,790 rpm | 14 mm |
+| ดอกยาง TPU บนสันผนัง | 0.90 | 7,590 rpm | 4,340 rpm | 13 mm |
+| ครีบบางที่สปริงได้ | 0.45 | 3,470 rpm | 1,980 rpm | 6 mm |
+| เส้นถักที่เลื่อนได้อิสระ | 0.45 | 2,080 rpm | 1,190 rpm | 8 mm |
+
+- ในการทดสอบจริงลูกไถลตลอดการสัมผัส สปินจึงขึ้นกับแรงเสียดทานเกือบทั้งหมด
+- เมื่อแรงเสียดทานเกินราว 0.35 ลูกจะยึดเกาะ แล้วความแข็งด้านข้างของผิวเริ่มสำคัญ ผิวจะดีดกลับทันในเวลาสัมผัสเมื่อแข็งด้านข้างราว 0.3–0.4 เท่าของด้านตั้งฉาก
+- ผิวที่นุ่มด้านข้างมากเกินไป เช่นเส้นถักที่เลื่อนได้อิสระแบบเอ็นเทนนิส ได้สปินน้อยลง เพราะดีดกลับไม่ทันก่อนลูกออก
+- ถ้าจะถักผิว ให้ถักแบบเชื่อมจุดไขว้ เน้นปุ่มนูนที่จุดไขว้ (0.3–0.5 mm) และใช้วัสดุที่ฝืด เช่น TPU
+- ตัวเลขดอกยาง TPU เป็นเพดานจากแบบจำลองอย่างง่าย สปินสูงแลกกับความเร็วลูกที่ลดลง (ในแท่นทดสอบ 23.5 m/s เหลือ 12.4 m/s)
+- วัดแรงเสียดทานของผิวที่พิมพ์ได้เองด้วยการวางลูกบนแผ่นทดสอบแล้วค่อย ๆ เอียงจนลูกไถล ค่าแรงเสียดทานคือ tan ของมุมนั้น
+
 ### ข้อจำกัดของแบบจำลอง
 
 - เป็นแบบจำลองคาน (grillage) ของผนัง ขอบ และด้าม ไม่ใช่ FEA สามมิติเต็มรูปแบบ และยังไม่ได้ทดสอบกับชิ้นงานจริง
-- ตัวเลข sweet spot ใช้เทียบระหว่างแบบ ค่าสัมบูรณ์ขึ้นกับเวลาสัมผัสลูกซึ่งยังไม่รู้แน่ชัด
+- ตัวเลข sweet spot ใช้เทียบระหว่างแบบ ค่าสัมบูรณ์ขึ้นกับเวลาสัมผัสลูก (ภาพของ John Kew บอกว่าไม่เกิน 2 ms)
+- แบบจำลองสปินใช้จุดสัมผัสเดียวและสปริงเชิงเส้น ค่าแรงเสียดทานของผิวแต่ละแบบเป็นค่าประมาณ ควรวัดจริง
 - การประเมินการโก่งของผนังเป็นการคำนวณคร่าว ๆ จากทฤษฎีคานลึก ควรทดสอบชิ้นงานจริงก่อนตีแรง ๆ
 
 แหล่งข้อมูล: [Pickleball Science: swing weight](https://pickleballscience.org/what-do-the-swing-weight-numbers-mean/),
@@ -136,7 +190,13 @@
 [Pickleball Science: sweet spot size](https://pickleballscience.org/how-large-is-the-sweet-spot/),
 [Pickleball Effect: วิธีทดสอบ](https://pickleballeffect.com/?p=39472),
 [Pickleball Central: swingweight และ twistweight](https://pickleballcentral.com/blog/the-lab-at-pickleball-central-why-swingweight-twistweight-and-balance-points-matter-in-pickleball/),
-[Pickleball Central: การติดเทปถ่วงน้ำหนัก](https://pickleballcentral.com/blog/lab-breakdown-ultimate-guide-to-using-weighted-tape/)
+[Pickleball Central: การติดเทปถ่วงน้ำหนัก](https://pickleballcentral.com/blog/lab-breakdown-ultimate-guide-to-using-weighted-tape/),
+[The Dink: ภาพความเร็วสูงเรื่อง dwell time](https://www.thedinkpickleball.com/is-dwell-time-a-pickleball-myth-what-high-speed-footage-actually-reveals/),
+[John Kew: Boomstik Infinigrit update](https://johnkewpickleball.beehiiv.com/p/johnkew-newsletter-boomstik-infinigrit-update),
+[Pickleball.com: John Kew spin testing](https://pickleball.com/gear/john-kew-taking-spin-testing-to-the-next-level),
+[Pickleball Science: friction and spin](https://pickleballscience.org/does-friction-create-more-spin/),
+[Pickleball Effect: RPM Jade Elongated 16mm](https://pickleballeffect.com/paddles/rpm-jade-elongated-16mm/),
+[Pickleball Effect: foam vs polymer cores](https://pickleballeffect.com/resources/foam-vs-polymer-core-breakdown/)
 
 ## ไม้รุ่นจริงที่ใช้อ้างอิง
 
@@ -166,7 +226,13 @@
 - ฐานจัตุรัสตั้งแต่ 310 mm ขึ้นไปพอเมื่อวางทแยง และต้องพิมพ์ได้สูงประมาณ 200 mm ฐาน 350×350 ใส่ได้ทุกทรงพร้อม brim
 - แนะนำ PETG เพราะทนแรงกระแทกดีกว่า PLA ผนัง 0.8 mm คือเส้นผนัง 2 เส้นจากหัวฉีด 0.4 mm ตั้งความกว้างเส้นราว 0.42 mm, เลเยอร์ 0.2 mm, ด้ามใช้ infill แบบ gyroid ประมาณ 15–20%
 
-ถ้าอยากวางนอนพิมพ์โดยไม่ใช้ซัพพอร์ต ใช้ `--grip flat` ได้ ด้ามจะเรียบเสมอกับด้านล่างของหน้าไม้
+**แบบ 16 mm พิมพ์นอน (`_flat16`)** ทุกส่วนหนาไม่เกิน 16 mm ด้านล่างจึงเป็นระนาบเดียว
+
+- วางนอนบนฐานได้เลย ไม่ต้องใช้ซัพพอร์ต ผนังทุกเส้นพิมพ์ตามแนวเส้นพลาสติก
+- ต้องใช้ฐานจัตุรัสราว 350 mm เมื่อวางทแยง (ทรง hybrid 351 mm) แนะนำฐาน 400 mm ขึ้นไปเพื่อเผื่อ brim
+- หัวฉีด 0.6 mm ทำผนัง 0.8 mm เป็นเส้นเดียวได้ ไม่มีรอยเชื่อมกลางผนัง
+
+ถ้าอยากวางนอนพิมพ์โดยไม่ใช้ซัพพอร์ตแต่ยังใช้หน้าไม้ 13 mm ใช้ `--grip flat` ได้ ด้ามจะเรียบเสมอกับด้านล่างของหน้าไม้
 แต่หน้าไม้จะเยื้องจากแกนด้าม 5.5 mm
 
 ## สร้างใหม่และวิเคราะห์
@@ -178,6 +244,9 @@ python3 generate_paddle.py --shape hybrid --grip flat
 python3 generate_paddle.py --shape elongated --pattern diamond --wall 1.0 --side-pad 6
 python3 analyze_paddle.py --shape elongated            # เทียบทุกรูปแบบ
 python3 analyze_paddle.py --pattern honeycomb --wall 1.0 --side-pad 0
+python3 generate_paddle.py --all --lay-flat            # แบบ 16 mm พิมพ์นอน
+python3 optimize_flat.py --thickness 16 --shape elongated
+python3 spin_model.py
 ```
 
 รูปแบบที่มีให้เลือก: `honeycomb`, `square`, `diamond`, `triangle`, `octagon`

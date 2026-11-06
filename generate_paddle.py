@@ -75,9 +75,20 @@ PATTERNS = ("honeycomb", "square", "diamond", "triangle", "octagon")
 PAD_RAMP = 20.0            # side pads ease in and out over this length
 
 # Grip: octagon, about 108 mm (4.25 in) around
+GRIP_CIRCUMFERENCE = 108.0
 GRIP_WIDTH = 36.0
 GRIP_DEPTH = 24.0
 GRIP_CHAMFER = 5.0
+DEPTH_LIMIT = None         # set by lay_flat(): nothing may be thicker than this
+
+# Lay-flat design (--lay-flat), from optimize_flat.py: a 16 mm face as thick
+# as the grip, 18 mm honeycomb cells, and rim and side pads per shape for
+# about 225 g.
+LAY_FLAT = dict(thickness=16.0, cell_pitch=18.0, shapes={
+    "standard": dict(rim=4.5, side_pad=5.4),
+    "hybrid": dict(rim=4.5, side_pad=5.7),
+    "elongated": dict(rim=5.5, side_pad=3.8),
+})
 THROAT_START = 15.0        # grip starts blending this far below the face
 THROAT_REACH = 22.0        # ...and has fully blended this far into it
 THROAT_WIDTH = 64.0        # blend width there, if the neck is wide enough
@@ -137,12 +148,25 @@ def rounded_slab(outline, z0, z1, radius):
     return slab.simplify(0.01)
 
 
-def pattern_lines(pattern, box, cy, density=RIB_DENSITY):
+def lay_flat(thickness):
+    """Make the face and the grip equally thick, so the paddle, with the face
+    centred on the grip, prints lying flat without supports.  The grip widens
+    to keep its circumference."""
+    global THICKNESS, GRIP_DEPTH, GRIP_WIDTH, GRIP_CHAMFER, DEPTH_LIMIT
+    THICKNESS = GRIP_DEPTH = DEPTH_LIMIT = thickness
+    GRIP_CHAMFER = min(5.0, thickness / 4)
+    # Octagon perimeter: 2 (W - 2c) + 2 (D - 2c) + 4 c sqrt(2).
+    GRIP_WIDTH = (GRIP_CIRCUMFERENCE - 2 * thickness
+                  + (8 - 4 * math.sqrt(2)) * GRIP_CHAMFER) / 2
+
+
+def pattern_lines(pattern, box, cy, density=None):
     """Rib centre-lines of `pattern` covering `box`, symmetric about x = 0.
 
-    Every pattern lays the same rib length per unit area (`density`), so at
-    equal wall thickness they weigh the same.
+    Every pattern lays the same rib length per unit area (`density`, default
+    RIB_DENSITY), so at equal wall thickness they weigh the same.
     """
+    density = RIB_DENSITY if density is None else density
     x0, y0, x1, y1 = box
     reach = math.hypot(x1 - x0, y1 - y0)
     c0 = np.array([0.0, cy])
@@ -252,6 +276,9 @@ def handle(shape, flat_bottom, outline, plan):
     wraps that step, as on production paddles.
     """
     def ring(y, w, d, c):
+        if DEPTH_LIMIT is not None:
+            d = min(d, DEPTH_LIMIT)
+            c = min(c, d / 2 - 0.5)
         zc = d / 2 if flat_bottom else 0.0
         return octagon_ring(y, w, d, c, zc)
 
@@ -425,10 +452,20 @@ def report(st):
           f"(rotated {st['bed_deg']} deg), {st['print_height']:.0f} mm tall")
 
 
-def output_name(shape_name, grip, pattern):
+def output_name(shape_name, grip, pattern, lay_flat_mm=None):
     suffix = ("" if pattern == "honeycomb" else f"_{pattern}") + (
-        "_flat" if grip == "flat" else "")
+        "_flat" if grip == "flat" else "") + (
+        f"_flat{lay_flat_mm:g}" if lay_flat_mm else "")
     return os.path.join("stl", f"pickleball_paddle_{shape_name}{suffix}.stl")
+
+
+def use_lay_flat_design(shape_name):
+    """Settings of the lay-flat design for one shape; returns its side pad."""
+    global RIB_DENSITY, RIM_WIDTH
+    lay_flat(LAY_FLAT["thickness"])
+    RIB_DENSITY = 2 / LAY_FLAT["cell_pitch"]
+    RIM_WIDTH = LAY_FLAT["shapes"][shape_name]["rim"]
+    return LAY_FLAT["shapes"][shape_name]["side_pad"]
 
 
 def main():
@@ -445,22 +482,29 @@ def main():
     ap.add_argument("--side-pad", type=float,
                     help="extra rim width (mm) along the straight sides; "
                          "defaults to the shape's own")
+    ap.add_argument("--lay-flat", action="store_true",
+                    help="the lay-flat design: 16 mm face as thick as the grip, "
+                         "prints lying flat with every wall along its layers")
     ap.add_argument("--all", action="store_true", help="write every shape")
     ap.add_argument("-o", "--output")
     args = ap.parse_args()
     WALL = args.wall
 
     for shape_name in SHAPES if args.all else [args.shape]:
+        side_pad = args.side_pad
+        if args.lay_flat:
+            side_pad = use_lay_flat_design(shape_name) if side_pad is None else side_pad
         out = (args.output if args.output and not args.all
-               else output_name(shape_name, args.grip, args.pattern))
+               else output_name(shape_name, args.grip, args.pattern,
+                                LAY_FLAT["thickness"] if args.lay_flat else None))
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         shape = SHAPES[shape_name]
         flat = args.grip == "flat"
         solid = build(shape, flat_bottom=flat, pattern=args.pattern,
-                      side_pad=args.side_pad)
+                      side_pad=side_pad)
         tris = write_stl(solid, out)
         print(f"{out}: {tris} triangles")
-        report(stats(solid, shape, on_edge=not flat))
+        report(stats(solid, shape, on_edge=not (flat or args.lay_flat)))
 
 
 if __name__ == "__main__":
