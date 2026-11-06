@@ -71,7 +71,7 @@ CELL_PITCH = 15.0          # honeycomb centre-to-centre distance across flats
 WALL = 0.8                 # wall thickness between cells: two 0.4 mm lines
 MIN_HOLE_WIDTH = 2.5       # clipped cells narrower than this stay solid
 RIB_DENSITY = 2 / CELL_PITCH  # rib length per face area (1/mm); sets weight
-PATTERNS = ("honeycomb", "square", "diamond", "triangle")
+PATTERNS = ("honeycomb", "square", "diamond", "triangle", "octagon")
 PAD_RAMP = 20.0            # side pads ease in and out over this length
 
 # Grip: octagon, about 108 mm (4.25 in) around
@@ -170,6 +170,17 @@ def pattern_lines(pattern, box, cy, density=RIB_DENSITY):
                 cyy = cy + j * p * math.sqrt(3) / 2
                 lines.append(LineString([(cx + u, cyy + v) for u, v in ring]))
         return lines
+    if pattern == "octagon":
+        # Octagons can't tile on their own: they share flat sides and leave
+        # small squares in the gaps (the truncated square tiling).
+        a = 6 / ((3 + 2 * math.sqrt(2)) * density)        # side length
+        p = a * (1 + math.sqrt(2))                        # octagon pitch
+        r = a / (2 * math.sin(math.pi / 8))
+        count = int(reach / p) + 2
+        ring = [(r * math.cos(math.radians(22.5 + 45 * k)),
+                 r * math.sin(math.radians(22.5 + 45 * k))) for k in range(9)]
+        return [LineString([(i * p + u, cy + j * p + v) for u, v in ring])
+                for j in range(-count, count + 1) for i in range(-count, count + 1)]
     if pattern == "square":
         return family(0, 2 / density) + family(90, 2 / density)
     if pattern == "diamond":
