@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Generate a one-piece pickleball paddle whose face is an open honeycomb.
 
-The paddle has no face skins: the hitting area is a through-thickness
-hexagonal lattice held by a solid rim (edge guard), joined to an octagonal
-grip with a flared butt cap.  Everything is a single watertight solid,
-exported as binary STL.  All dimensions are in millimetres.
+By default the paddle has no face skins: the hitting area is a
+through-thickness hexagonal lattice held by a solid rim (edge guard), joined
+to an octagonal grip with a flared butt cap.  With --mesh a woven skin, a
+fused plain weave, covers both faces of a thinner core.  Everything is a
+single watertight solid, exported as binary STL.  All dimensions are in
+millimetres.
 
     pip install manifold3d numpy shapely
     python3 generate_paddle.py --shape elongated        # grip centred on the face
     python3 generate_paddle.py --shape hybrid --grip flat
     python3 generate_paddle.py --all                    # every shape
     python3 generate_paddle.py --all --pattern diamond --wall 1.0 --side-pad 8
+    python3 generate_paddle.py --mesh                   # woven skins, prints flat
+    python3 generate_paddle.py --mesh --no-skin         # the same core, bare
 """
 
 import argparse
@@ -89,6 +93,38 @@ LAY_FLAT = dict(thickness=16.0, cell_pitch=18.0, shapes={
     "hybrid": dict(rim=4.5, side_pad=5.7),
     "elongated": dict(rim=5.5, side_pad=3.8),
 })
+# Woven skin (--mesh): a fused plain weave on both faces of a thinner core.
+# Its parts, measured outward from the core as fractions of SKIN:
+#   a         straight strands of family A; on the top face they print first
+#             and bridge the open cells from cap to cap
+#   caps      a cap on every wall, so every wall is bonded to the skin, even
+#             walls the A strands cross only at a shallow angle
+#   b         strands of family B, fused to A where they cross
+#   knuckles  where each strand passes over the other, alternating as in a
+#             plain weave
+# Caps and knuckles stand MESH_GROW wider each side than what they sit on, so
+# no faces end flush (flush faces leave zero-area triangles in the STL).  The
+# other face is the same skin turned over about the paddle's long axis.
+SKIN = 0.0                 # skin thickness per face (mm); 0 = open lattice
+MESH_PITCH = 4.0           # strand spacing (mm)
+MESH_STRAND = 0.8          # strand width: two 0.4 mm lines
+MESH_ANGLE = 45.0          # family A runs at +45 degrees, family B at -45
+MESH_OVERLAP = 0.9         # the skin runs this far into the rim to fuse with it
+MESH_GROW = 0.1            # caps and knuckles stand this much wider each side
+ZONE_REACH = 0.05          # the walls' trim reaches this far into the rim
+MESH_LAYERS = (("a", 0.0, 0.75), ("caps", 0.0, 0.5), ("b", 0.5, 0.75),
+               ("knuckles", 0.75, 1.0))
+
+# Woven-skin design (--mesh), from optimize_flat.py --thickness 14 --skin 0.8:
+# a 14 mm core with 0.8 mm skins, 15.6 mm in all and as thick as the grip.
+# The skins brace the walls, so the cells grow; per shape the best cell
+# size, rim, side pad and strand spacing for 225 g.  Elongated scores best.
+MESH_DESIGN = dict(core=14.0, skin=0.8, shapes={
+    "standard": dict(cell_pitch=20.0, rim=4.5, side_pad=4.9, mesh_pitch=5.0),
+    "hybrid": dict(cell_pitch=20.0, rim=4.5, side_pad=5.4, mesh_pitch=5.0),
+    "elongated": dict(cell_pitch=19.0, rim=4.5, side_pad=7.7, mesh_pitch=6.0),
+})
+
 THROAT_START = 15.0        # grip starts blending this far below the face
 THROAT_REACH = 22.0        # ...and has fully blended this far into it
 THROAT_WIDTH = 64.0        # blend width there, if the neck is wide enough
@@ -354,20 +390,141 @@ def face_regions(shape, side_pad=None):
     return outline, plan, region, throat_solid
 
 
+def core_depth():
+    """Depth of the core between the skins: the face minus its two skins."""
+    return THICKNESS - 2 * SKIN
+
+
+def mesh_layer(name):
+    """(s0, s1) of a part of the weave: mm outward from the core."""
+    _, f0, f1 = next(layer for layer in MESH_LAYERS if layer[0] == name)
+    return f0 * SKIN, f1 * SKIN
+
+
+def wall_depth():
+    """Depth of the lattice walls, counting their caps in the skins."""
+    if SKIN <= 0:
+        return THICKNESS
+    s0, s1 = mesh_layer("caps")
+    return core_depth() + 2 * (s1 - s0)
+
+
+def weave_pieces(bounds):
+    """Strand pieces of the top skin's weave covering `bounds` (x0, y0, x1,
+    y1), by part: arrays of centres (n, 2), directions (n, 2) and lengths."""
+    p, a = MESH_PITCH, math.radians(MESH_ANGLE)
+    d = np.array([math.cos(a), math.sin(a)])         # family A runs along d
+    n = np.array([-d[1], d[0]])                       # family B runs along n
+    x0, y0, x1, y1 = bounds
+    c = np.array([0.0, (y0 + y1) / 2])
+    reach = math.hypot(x1 - x0, y1 - y0)
+    k = np.arange(-int(reach / p) - 1, int(reach / p) + 2)
+    ones = np.ones((len(k), 1))
+    strands_a = (c + np.outer(k * p, n), ones * d, np.full(len(k), 2 * reach))
+    strands_b = (c + np.outer(k * p, d), ones * n, np.full(len(k), 2 * reach))
+    # Crossing (i, j) of A strand i and B strand j; A passes over B where
+    # i + j is even and under it where it is odd.
+    i, j = (g.ravel() for g in np.meshgrid(k, k))
+    centres = c + np.outer(i * p, n) + np.outer(j * p, d)
+    near = ((centres[:, 0] > x0 - p) & (centres[:, 0] < x1 + p)
+            & (centres[:, 1] > y0 - p) & (centres[:, 1] < y1 + p))
+    centres = centres[near]
+    along = np.where(((i + j) % 2 == 0)[near, None], d, n)
+    knuckles = (centres, along, np.full(len(centres), p))
+    return {"a": strands_a, "b": strands_b, "knuckles": knuckles}
+
+
+def mesh_width(name):
+    """Width of a strand part: knuckles stand wider than the strands."""
+    return MESH_STRAND + (2 * MESH_GROW if name == "knuckles" else 0.0)
+
+
+def weave_parts(clip, walls=None):
+    """Parts of the top skin's weave inside `clip`, as (s0, s1, CrossSection)
+    with s measured outward from the core (mm); `walls`, the lattice walls'
+    footprint, gets caps."""
+    pieces = weave_pieces(clip.bounds())
+    parts = []
+    for name, f0, f1 in MESH_LAYERS:
+        if name == "caps":
+            if walls is None:
+                continue
+            cs = walls.offset(MESH_GROW)
+        else:
+            centres, along, lengths = pieces[name]
+            u = along * lengths[:, None] / 2
+            v = along[:, ::-1] * np.array([-1.0, 1.0]) * mesh_width(name) / 2
+            cs = CrossSection(list(np.stack([centres - u - v, centres + u - v,
+                                             centres + u + v, centres - u + v], axis=1)))
+        parts.append((f0 * SKIN, f1 * SKIN, cs ^ clip))
+    return parts
+
+
+def parts_volume(parts, region):
+    """Volume (mm^3) inside `region` of stacked, overlapping parts."""
+    cuts = sorted({s for s0, s1, _ in parts for s in (s0, s1)})
+    total = 0.0
+    for z0, z1 in zip(cuts, cuts[1:]):
+        covering = [cs for s0, s1, cs in parts if s0 <= z0 + 1e-9 and s1 >= z1 - 1e-9]
+        if covering:
+            total += (z1 - z0) * (CrossSection.batch_boolean(covering, OpType.Add)
+                                  ^ region).area()
+    return total
+
+
+def skin_volume(region, holes):
+    """Volume (mm^3) the two skins add over the lattice `region` (cut by
+    `holes`); the strip that runs into the rim adds nothing."""
+    return 2 * parts_volume(weave_parts(region.offset(MESH_OVERLAP), region - holes),
+                            region)
+
+
+def skins(region, holes, zc):
+    """Both woven skins over the lattice `region` (cut by `holes`) of a face
+    centred at z = zc."""
+    base = zc + core_depth() / 2
+    top = Manifold.batch_boolean(
+        [Manifold.extrude(cs, s1 - s0).translate((0, 0, base + s0))
+         for s0, s1, cs in weave_parts(region.offset(MESH_OVERLAP), region - holes)],
+        OpType.Add)
+    # Turned over about the long axis (mirror x, then z), the other face
+    # shows the same weave.
+    return top + (top.translate((0, 0, -zc)).mirror((1, 0, 0)).mirror((0, 0, 1))
+                  .translate((0, 0, zc)))
+
+
 def build(shape, flat_bottom=True, pattern="honeycomb", wall=uniform_wall,
-          side_pad=None):
+          side_pad=None, skin=True):
+    """The paddle as one solid.  With SKIN > 0 the lattice walls stop at the
+    core and woven skins cover both faces; skin=False leaves them off."""
     z0 = 0.0 if flat_bottom else -THICKNESS / 2
+    zc = z0 + THICKNESS / 2
     outline, plan, region, _ = face_regions(shape, side_pad)
     slab = rounded_slab(outline, z0, z0 + THICKNESS, EDGE_RADIUS)
-    holes = Manifold.extrude(lattice(region, pattern, wall)[0],
-                             THICKNESS + 2).translate((0, 0, z0 - 1))
-    return (slab - holes) + handle(shape, flat_bottom, outline, plan)
+    holes2d = lattice(region, pattern, wall)[0]
+    holes = Manifold.extrude(holes2d, THICKNESS + 2).translate((0, 0, z0 - 1))
+    face = slab - holes
+    if SKIN > 0:
+        # Trim the walls to the core.  The cut reaches a little into the rim
+        # so it never runs flush with the sides of cells the rim clips (flush
+        # cuts leave zero-area triangles).
+        zone = Manifold.extrude(region.offset(ZONE_REACH), SKIN + 1)
+        face = (face - zone.translate((0, 0, zc + core_depth() / 2))
+                - zone.translate((0, 0, z0 - 1)))
+        if skin:
+            face = face + skins(region, holes2d, zc)
+    return face + handle(shape, flat_bottom, outline, plan)
 
 
 def write_stl(solid, path):
     mesh = solid.to_mesh()
     verts = np.asarray(mesh.vert_properties)[:, :3].astype(np.float32)
-    tris = verts[np.asarray(mesh.tri_verts)]
+    # STL stores float32, so vertices a hair apart in the solid can land on
+    # the same point: weld them, and drop the triangles that collapse.
+    verts, weld = np.unique(verts, axis=0, return_inverse=True)
+    tri = weld.reshape(-1)[np.asarray(mesh.tri_verts)]
+    tri = tri[(tri[:, 0] != tri[:, 1]) & (tri[:, 1] != tri[:, 2]) & (tri[:, 2] != tri[:, 0])]
+    tris = verts[tri]
     normals = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
     record = np.dtype([("normal", "<f4", 3), ("verts", "<f4", (3, 3)),
@@ -452,10 +609,11 @@ def report(st):
           f"(rotated {st['bed_deg']} deg), {st['print_height']:.0f} mm tall")
 
 
-def output_name(shape_name, grip, pattern, lay_flat_mm=None):
+def output_name(shape_name, grip, pattern, lay_flat_mm=None, mesh=None):
     suffix = ("" if pattern == "honeycomb" else f"_{pattern}") + (
         "_flat" if grip == "flat" else "") + (
-        f"_flat{lay_flat_mm:g}" if lay_flat_mm else "")
+        f"_flat{lay_flat_mm:g}" if lay_flat_mm else "") + (
+        {"skin": "_mesh", "bare": "_mesh_core"}.get(mesh, ""))
     return os.path.join("stl", f"pickleball_paddle_{shape_name}{suffix}.stl")
 
 
@@ -466,6 +624,18 @@ def use_lay_flat_design(shape_name):
     RIB_DENSITY = 2 / LAY_FLAT["cell_pitch"]
     RIM_WIDTH = LAY_FLAT["shapes"][shape_name]["rim"]
     return LAY_FLAT["shapes"][shape_name]["side_pad"]
+
+
+def use_mesh_design(shape_name):
+    """Settings of the woven-skin design for one shape; returns its side pad."""
+    global SKIN, RIB_DENSITY, RIM_WIDTH, MESH_PITCH
+    d = MESH_DESIGN["shapes"][shape_name]
+    SKIN = MESH_DESIGN["skin"]
+    lay_flat(MESH_DESIGN["core"] + 2 * SKIN)
+    RIB_DENSITY = 2 / d["cell_pitch"]
+    RIM_WIDTH = d["rim"]
+    MESH_PITCH = d["mesh_pitch"]
+    return d["side_pad"]
 
 
 def main():
@@ -485,6 +655,11 @@ def main():
     ap.add_argument("--lay-flat", action="store_true",
                     help="the lay-flat design: 16 mm face as thick as the grip, "
                          "prints lying flat with every wall along its layers")
+    ap.add_argument("--mesh", action="store_true",
+                    help="the woven-skin design: 14 mm core with a 0.8 mm woven "
+                         "skin on each face, prints lying flat")
+    ap.add_argument("--no-skin", action="store_true",
+                    help="with --mesh, leave the skins off (the bare core)")
     ap.add_argument("--all", action="store_true", help="write every shape")
     ap.add_argument("-o", "--output")
     args = ap.parse_args()
@@ -492,19 +667,25 @@ def main():
 
     for shape_name in SHAPES if args.all else [args.shape]:
         side_pad = args.side_pad
-        if args.lay_flat:
-            side_pad = use_lay_flat_design(shape_name) if side_pad is None else side_pad
+        if args.lay_flat or args.mesh:
+            design = use_mesh_design(shape_name) if args.mesh else use_lay_flat_design(shape_name)
+            side_pad = design if side_pad is None else side_pad
+        mesh = ("bare" if args.no_skin else "skin") if args.mesh else None
         out = (args.output if args.output and not args.all
                else output_name(shape_name, args.grip, args.pattern,
-                                LAY_FLAT["thickness"] if args.lay_flat else None))
+                                LAY_FLAT["thickness"] if args.lay_flat else None, mesh))
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         shape = SHAPES[shape_name]
         flat = args.grip == "flat"
         solid = build(shape, flat_bottom=flat, pattern=args.pattern,
-                      side_pad=side_pad)
+                      side_pad=side_pad, skin=not args.no_skin)
         tris = write_stl(solid, out)
         print(f"{out}: {tris} triangles")
-        report(stats(solid, shape, on_edge=not (flat or args.lay_flat)))
+        st = stats(solid, shape, on_edge=not (flat or args.lay_flat or args.mesh))
+        if SKIN > 0:     # the skins' openings would count as cells
+            st["cells"] = build(shape, flat_bottom=flat, pattern=args.pattern,
+                                side_pad=side_pad, skin=False).genus()
+        report(st)
 
 
 if __name__ == "__main__":

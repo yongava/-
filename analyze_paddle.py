@@ -9,7 +9,7 @@ For a paddle built by generate_paddle.py this computes:
 * the centre of percussion for a pivot 3 in up the handle (the centre of the
   palm, as Pickleball Science uses);
 * free-free vibration modes of a beam-grid (grillage) model of the ribs, rim
-  and handle;
+  and handle, plus the woven skins when the paddle has them;
 * a rebound map: a ball strikes the stationary, free paddle at points across
   the face, and the contact is integrated through those modes.  The sweet
   spot is the area that returns at least 95 % of the paddle's best rebound.
@@ -25,6 +25,7 @@ import numpy as np
 import scipy.sparse as sp
 from manifold3d import Manifold
 from scipy.sparse.linalg import eigsh
+from scipy.spatial import Delaunay
 from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import nearest_points, unary_union
 
@@ -35,6 +36,7 @@ DENSITY = 1.25e-3          # g/mm^3
 HANDLE_FILL = 0.35         # handle mass fraction with ~15-20 % infill
 E_MODULUS = 2.0e9          # Pa
 POISSON = 0.38
+SKIN_MODULUS = {}          # woven skin strands ("a", "b") -> modulus (Pa) if not PETG
 HANDLE_STIFFNESS = 0.6     # handle bending/torsion stiffness vs solid section
 MODAL_DAMPING = 0.02
 
@@ -149,6 +151,9 @@ class Grillage:
         self.elems = []        # (i, j, EI, GJ, kg/m, depth m)
         self.tied = set()
         self.extra_mass = {}   # node -> (kg, rotary kg*m^2 about x, about y)
+        self.skin = []         # (three nodes, fraction of the triangle skinned)
+        self.skin_d = None     # skins' bending stiffness, N*m (3 x 3)
+        self.skin_rho = 0.0    # skins' mass per face area, kg/m^2
 
     def node(self, p):
         k = (round(float(p[0]), 4), round(float(p[1]), 4))
@@ -182,6 +187,65 @@ def solid_section(width, depth, chamfer):
     area = np.trapezoid(2 * half, z)
     j = rect_torsion(2 * hw, 2 * hd) * area / (4 * hw * hd)
     return ixx, j
+
+
+def skin_properties(region):
+    """Bending stiffness (N*m, for curvatures [k_xx, k_yy, 2 k_xy]) the two
+    woven skins add to the face, and their mass per face area (kg/m^2).
+
+    Each continuous strand family is a sheet with stiffness E * fill along
+    its strands, set off from the mid-plane and carried by the core (plane
+    sections stay plane); the knuckles are short and only add weight.
+    """
+    fill = gp.MESH_STRAND / gp.MESH_PITCH
+    half = gp.core_depth() / 2
+    d = np.zeros((3, 3))
+    for name, a in (("a", gp.MESH_ANGLE), ("b", gp.MESH_ANGLE - 90.0)):
+        s0, s1 = gp.mesh_layer(name)
+        t = (s1 - s0) / 1000
+        z = (half + (s0 + s1) / 2) / 1000
+        for sx in (1.0, -1.0):          # top skin; the bottom one is it turned over
+            c, s = sx * math.cos(math.radians(a)), math.sin(math.radians(a))
+            v = np.array([c * c, s * s, c * s])
+            d += (SKIN_MODULUS.get(name, E_MODULUS) * fill * t
+                  * (z * z + t * t / 12) * np.outer(v, v))
+    # The caps count with the walls, which reach into the skins.
+    clip = region.offset(gp.MESH_OVERLAP)
+    volume = gp.parts_volume(gp.weave_parts(clip), clip)
+    return d, 2 * DENSITY * volume / clip.area() * 1e3
+
+
+def add_skin(g, region, region_p):
+    """Skin over the lattice: triangles between the grillage nodes, each
+    weighted by how much of it lies over the lattice region."""
+    g.skin_d, g.skin_rho = skin_properties(region)
+    xy = np.array(g.xy)
+    for nodes in Delaunay(xy).simplices:
+        tri = Polygon(xy[nodes])
+        if tri.area < 1e-6:
+            continue
+        frac = tri.intersection(region_p).area / tri.area
+        if frac > 1e-3:
+            g.skin.append((nodes, frac))
+
+
+def skin_k(p, d):
+    """Stiffness of a skin triangle (corners p, in m) in [w, theta_x, theta_y] x 3.
+
+    Rotations are interpolated linearly; at height z the face moves in plane
+    by z (theta_y, -theta_x), so the skins strain by z times the curvatures
+    [d theta_y/dx, -d theta_x/dy, d theta_y/dy - d theta_x/dx].
+    """
+    (x0, y0), (x1, y1), (x2, y2) = p
+    a2 = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)       # twice signed area
+    b = np.array([y1 - y2, y2 - y0, y0 - y1]) / a2           # dN/dx
+    c = np.array([x2 - x1, x0 - x2, x1 - x0]) / a2           # dN/dy
+    bm = np.zeros((3, 9))
+    bm[0, 2::3] = b
+    bm[1, 1::3] = -c
+    bm[2, 2::3] = c
+    bm[2, 1::3] = -b
+    return bm.T @ d @ bm * abs(a2) / 2
 
 
 def build_grillage(shape, pattern, wall, solid, side_pad=None):
@@ -257,7 +321,7 @@ def build_grillage(shape, pattern, wall, solid, side_pad=None):
                 ends[k] = snap(kind)
         if np.linalg.norm(ends[1] - ends[0]) < 0.5:
             continue                          # sliver of rib inside the rim
-        nodes = g.beam(ends[0], ends[1], t, gp.THICKNESS, 4.0)
+        nodes = g.beam(ends[0], ends[1], t, gp.wall_depth(), 4.0)
         for k, kind in enumerate(kinds):
             if kind == "tie":
                 g.tied.add(nodes[0] if k == 0 else nodes[-1])
@@ -267,6 +331,8 @@ def build_grillage(shape, pattern, wall, solid, side_pad=None):
     for i, (x, y) in enumerate(g.xy):
         if throat_p.distance(Point(x, y)) < 0.5:
             g.tied.add(i)
+    if gp.SKIN > 0:
+        add_skin(g, region, region_p)
 
     # Handle: beam of the grip section from the butt to where the throat starts.
     top = shape["handle"] - gp.THROAT_START
@@ -278,8 +344,9 @@ def build_grillage(shape, pattern, wall, solid, side_pad=None):
         g.elems.append((a, b, gmod * ixx, gmod / (2 * (1 + POISSON)) * j, 0.0, 0.0))
     g.tied.add(hnodes[-1])
     edges = np.concatenate([[ys[0]], (ys[1:] + ys[:-1]) / 2, [ys[-1]]])
+    grip = slab(solid, -1.0, shape["handle"])          # slice the small part, not the face
     for k, n in enumerate(hnodes):
-        v, f, s = moments(slab(solid, edges[k], edges[k + 1]))
+        v, f, s = moments(slab(grip, edges[k], edges[k + 1]))
         m = DENSITY * HANDLE_FILL * v / 1000            # kg
         g.extra_mass[n] = (m, m * (gp.GRIP_DEPTH / 1000)**2 / 12,
                            m * ((gp.GRIP_WIDTH / 1000)**2
@@ -289,14 +356,14 @@ def build_grillage(shape, pattern, wall, solid, side_pad=None):
     # solid area where the face meets the neck.
     big = 2000.0
     throat_prism = Manifold.extrude(throat_solid, big).translate((0, 0, -big / 2))
-    parts = [(slab(solid, top, shape["handle"]), DENSITY * HANDLE_FILL),
-             (slab(solid, shape["handle"], 1000.0) ^ throat_prism, DENSITY)]
+    face = slab(solid, shape["handle"], 1000.0)
+    parts = [(slab(grip, top, shape["handle"]), DENSITY * HANDLE_FILL),
+             (face ^ throat_prism, DENSITY)]
     rigid = [0.0, np.zeros(3), np.zeros((3, 3))]
     for part, rho in parts:
         v, f, s = moments(part)
         rigid = [rigid[0] + rho * v, rigid[1] + rho * f, rigid[2] + rho * s]
-    face_target = DENSITY * moments(slab(solid, shape["handle"], 1000.0)
-                                    - throat_prism)[0]
+    face_target = DENSITY * moments(face - throat_prism)[0]
     return g, rigid, face_target, (0.0, shape["handle"]), region_p, throat_p
 
 
@@ -321,12 +388,26 @@ def assemble(g, rigid, face_target, master_xy):
             mass[3 * node] += m
             mass[3 * node + 1] += m * depth**2 / 12
             mass[3 * node + 2] += m * depth**2 / 12
+    # Skins: stiffness on the rotations, mass at the skins' mid-planes.
+    skin_mass = np.zeros(3 * n)
+    z = (gp.core_depth() + gp.SKIN) / 2000
+    for nodes, frac in g.skin:
+        k = skin_k(xy[nodes], g.skin_d) * frac
+        dof = np.ravel([[3 * i, 3 * i + 1, 3 * i + 2] for i in nodes]).tolist()
+        rows += np.repeat(dof, 9).tolist()
+        cols += dof * 9
+        vals += k.ravel().tolist()
+        (x0, y0), (x1, y1), (x2, y2) = xy[nodes]
+        m = g.skin_rho * frac * abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)) / 6
+        for i in nodes:
+            skin_mass[3 * i:3 * i + 3] += (m, m * z * z, m * z * z)
     # Scale the face's lumped masses to the solid model's face mass.
     face_nodes = [i for i in range(n) if i not in g.extra_mass]
     lumped = mass[[3 * i for i in face_nodes]].sum() * 1000      # g
-    scale = face_target / lumped
+    scale = (face_target - skin_mass[0::3].sum() * 1000) / lumped
     for i in face_nodes:
         mass[3 * i:3 * i + 3] *= scale
+    mass += skin_mass
     for node, (m, ix, iy) in g.extra_mass.items():
         mass[3 * node:3 * node + 3] += (m, ix, iy)
     k_full = sp.csr_matrix((vals, (rows, cols)), shape=(3 * n, 3 * n))
