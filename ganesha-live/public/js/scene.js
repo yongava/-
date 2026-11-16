@@ -19,10 +19,12 @@ const popups = $('#popups');
 const toasts = $('#toasts');
 
 function fit() {
-  const s = Math.min(innerWidth / W, innerHeight / H);
+  const box = stage.parentElement;
+  const s = Math.min((box.clientWidth || innerWidth) / W, (box.clientHeight || innerHeight) / H);
   stage.style.transform = `translate(-50%, -50%) scale(${s})`;
 }
 addEventListener('resize', fit);
+if (window.ResizeObserver) new ResizeObserver(fit).observe(stage.parentElement);
 fit();
 
 // ---------- helpers ----------
