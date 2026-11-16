@@ -4,12 +4,17 @@ import http from 'node:http';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { TikTokLiveConnection, WebcastEvent, ControlEvent, UserOfflineError } from 'tiktok-live-connector';
-import { createGame, DEFAULT_SETTINGS } from './public/js/game.js';
+import msedge from 'msedge-tts';
+import { createGame, DEFAULT_SETTINGS, VOICES, VOICE_RATES } from './public/js/game.js';
 import { createSim } from './public/js/sim.js';
+import { createAnnouncer, IDLE_LINES } from './public/js/lines.js';
+
+const { MsEdgeTTS, OUTPUT_FORMAT } = msedge;
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
@@ -19,8 +24,9 @@ const HOST = process.env.HOST || '127.0.0.1';
 const SETTINGS_FILE = path.join(DATA, 'settings.json');
 const STATE_FILE = path.join(DATA, 'state.json');
 const DEITY_FILE = path.join(DATA, 'deity-image');
+const TTS_DIR = path.join(DATA, 'tts-cache');
 
-fs.mkdirSync(DATA, { recursive: true });
+fs.mkdirSync(TTS_DIR, { recursive: true });
 
 function readJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
@@ -29,6 +35,7 @@ function readJSON(file, fallback) {
 let settings = { ...DEFAULT_SETTINGS, ...readJSON(SETTINGS_FILE, {}) };
 const game = createGame(() => settings, readJSON(STATE_FILE, null));
 const sim = createSim();
+const announcer = createAnnouncer(() => settings);
 
 let saveTimer = null;
 function saveSoon() {
@@ -73,12 +80,93 @@ const LABEL = {
 };
 
 function handle(ev) {
-  const out = game.apply(ev);
-  broadcast({ type: 'event', event: out, state: game.snapshot() });
-  if (out.type !== 'join' && out.type !== 'like') log(`${ev.sim ? '[ทดสอบ] ' : ''}${LABEL[out.type]?.(out) ?? out.type}`);
-  if (out.ceremony) log(`🪔 ครบพลังศรัทธา เริ่มพิธีอารตีรอบที่ ${out.ceremony}`);
+  publish(game.apply(ev), ev.sim);
+}
+
+function publish(out, isSim) {
+  const state = game.snapshot();
+  broadcast({ type: 'event', event: out, state });
+  if (out.type !== 'join' && out.type !== 'like' && out.type !== 'ceremony') log(`${isSim ? '[ทดสอบ] ' : ''}${LABEL[out.type]?.(out) ?? out.type}`);
+  if (out.chantDone) log(`📿 ทุกคนช่วยกันสาธุครบ ${state.chantGoal} ครั้ง (รอบที่ ${out.chantDone})`);
+  if (out.ceremony) log(`🪔 เริ่มพิธีอารตีรอบที่ ${out.ceremony}`);
+  speak(announcer.onEvent(out, state));
   saveSoon();
 }
+
+// ---------- Thai voice (text to speech) ----------
+// ใช้เสียงภาษาไทยของ Microsoft Edge (ฟรี ไม่ต้องใช้คีย์) ถ้าใช้ไม่ได้จะสลับไปใช้ Google Translate
+let edge = null;
+let edgeVoice = '';
+let ttsChain = Promise.resolve();
+const ttsInFlight = new Map();
+
+const escapeXml = (t) => t.replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]);
+function withTimeout(promise, ms) {
+  return Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
+}
+
+async function edgeSynth(text, voice, rate) {
+  if (!edge || edgeVoice !== voice) {
+    try { edge?.close(); } catch { /* ignore */ }
+    edge = new MsEdgeTTS();
+    await edge.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    edgeVoice = voice;
+  }
+  // บริการนี้ไม่รับค่า "+0%" หรือค่าว่าง แต่รับ "0%"
+  const { audioStream } = edge.toStream(escapeXml(text), { rate: rate === '+0%' ? '0%' : rate });
+  const chunks = [];
+  for await (const c of audioStream) chunks.push(c);
+  const buf = Buffer.concat(chunks);
+  if (buf.length < 800) throw new Error('empty audio');
+  return buf;
+}
+
+async function googleSynth(text) {
+  const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(text.slice(0, 200))}`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  if (!res.ok) throw new Error(`google ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+let ttsWarned = false;
+function synth(text, voice, rate) {
+  const key = crypto.createHash('sha1').update(`${voice}|${rate}|${text}`).digest('hex');
+  if (ttsInFlight.has(key)) return ttsInFlight.get(key);
+  const file = path.join(TTS_DIR, `${key}.mp3`);
+  const job = (async () => {
+    try { return await fsp.readFile(file); } catch { /* not cached yet */ }
+    const run = ttsChain.then(async () => {
+      try { return await withTimeout(edgeSynth(text, voice, rate), 15000); } catch { edge = null; }
+      try { return await withTimeout(edgeSynth(text, voice, rate), 15000); } catch (err) {
+        edge = null;
+        if (!ttsWarned) { ttsWarned = true; log(`⚠️ เสียงพูดของ Microsoft ใช้ไม่ได้ (${err.message}) สลับไปใช้ Google`); }
+      }
+      return withTimeout(googleSynth(text), 10000);
+    });
+    ttsChain = run.catch(() => {});
+    const buf = await run;
+    await fsp.writeFile(file, buf).catch(() => {});
+    return buf;
+  })();
+  ttsInFlight.set(key, job);
+  job.finally(() => ttsInFlight.delete(key)).catch(() => {});
+  return job;
+}
+
+function speak(items) {
+  for (const item of items) {
+    broadcast({ type: 'say', item });
+    log(`🗣️ ${item.text}`);
+    // สังเคราะห์เสียงรอไว้ก่อน หน้าฉากจะได้เล่นได้ทันที
+    synth(item.text, settings.voiceName, settings.voiceRate).catch(() => {});
+  }
+}
+
+setInterval(() => {
+  if (!clients.size || !(status.state === 'connected' || status.autoSim)) return;
+  const item = announcer.idle(game.snapshot());
+  if (item) speak([item]);
+}, 5000);
 
 // ---------- TikTok connection ----------
 const tk = { conn: null, wanted: false, username: '', retry: null };
@@ -210,12 +298,18 @@ function setAutoSim(on) {
 }
 
 // ---------- settings ----------
-const EDITABLE = ['title', 'mantra', 'goal', 'pointsPerCoin', 'pointsPerLike', 'pointsPerComment', 'pointsPerFollow', 'pointsPerShare', 'bigGiftCoins', 'sound', 'bannedWords'];
+const EDITABLE = [
+  'title', 'mantra', 'goal', 'pointsPerCoin', 'pointsPerLike', 'pointsPerComment', 'pointsPerFollow', 'pointsPerShare',
+  'bigGiftCoins', 'chantGoal', 'sound', 'sfxVolume', 'bgm', 'bgmVolume', 'voiceEnabled', 'voiceName', 'voiceRate',
+  'voiceVolume', 'voiceOutput', 'speakGifts', 'speakWishes', 'speakWelcome', 'speakIdle', 'idleSeconds', 'bannedWords',
+];
+const CHOICES = { voiceName: Object.keys(VOICES), voiceRate: VOICE_RATES, voiceOutput: ['scene', 'control'] };
 function updateSettings(patch) {
   for (const key of EDITABLE) {
     if (!(key in patch)) continue;
     const def = DEFAULT_SETTINGS[key];
     let v = patch[key];
+    if (CHOICES[key]) { if (CHOICES[key].includes(v)) settings[key] = v; continue; }
     if (typeof def === 'number') { v = Number(v); if (!Number.isFinite(v) || v < 0) continue; if (key === 'goal') v = Math.max(1, Math.round(v)); }
     else if (typeof def === 'boolean') v = Boolean(v);
     else if (Array.isArray(def)) v = (Array.isArray(v) ? v : String(v).split(/[,\n]/)).map((x) => String(x).trim()).filter(Boolean).slice(0, 200);
@@ -267,6 +361,22 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': settings.deityMime || 'image/png', 'Cache-Control': 'no-cache' });
       res.end(data);
     } catch { res.writeHead(404).end(); }
+    return;
+  }
+
+  if (url.pathname === '/api/tts' && req.method === 'GET') {
+    const text = (url.searchParams.get('text') || '').trim().slice(0, 240);
+    const voice = url.searchParams.get('voice');
+    const rate = url.searchParams.get('rate') || '+0%';
+    if (!text || !VOICES[voice] || !VOICE_RATES.includes(rate)) { res.writeHead(400).end(); return; }
+    try {
+      const buf = await synth(text, voice, rate);
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': buf.length, 'Cache-Control': 'max-age=86400' });
+      res.end(buf);
+    } catch (err) {
+      log(`⚠️ สร้างเสียงพูดไม่สำเร็จ: ${err.message}`);
+      res.writeHead(502).end();
+    }
     return;
   }
 
@@ -323,6 +433,10 @@ wss.on('connection', (ws) => {
       case 'sim': handle({ ...sim.make(msg.kind, msg.option), sim: true }); break;
       case 'autoSim': setAutoSim(msg.on); break;
       case 'settings': updateSettings(msg.settings || {}); break;
+      case 'say': if (msg.text) speak([announcer.custom(String(msg.text))]); break;
+      case 'voiceTest': speak([announcer.custom('ทดสอบเสียงค่ะ สวัสดีทุกคน ยินดีต้อนรับสู่ไลฟ์สักการะองค์พระพิฆเนศค่ะ')]); break;
+      case 'voiceStop': broadcast({ type: 'voiceStop' }); break;
+      case 'ceremony': publish(game.startCeremony(), false); break;
       case 'reset':
         game.reset();
         saveSoon();
@@ -355,6 +469,8 @@ server.listen(PORT, HOST, () => {
     exec(cmd, () => {});
   }
   if (settings.username) status.username = settings.username;
+  // เปิดการเชื่อมต่อเสียงพูดไว้ก่อน ประโยคแรกในไลฟ์จะได้ไม่ช้า
+  if (settings.voiceEnabled) synth(IDLE_LINES[0], settings.voiceName, settings.voiceRate).catch(() => {});
 });
 
 process.on('SIGINT', () => {

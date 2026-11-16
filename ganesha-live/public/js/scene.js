@@ -2,6 +2,9 @@
 // Scene renderer. Receives events from server.js over WebSocket (or from the built-in demo).
 import { createGame, DEFAULT_SETTINGS, clip } from './game.js';
 import { createSim } from './sim.js';
+import { GANESHA_SVG, garlandSVG, MODAK_SLOTS } from './ganesha.js';
+import { createAnnouncer } from './lines.js';
+import { createVoice, serverVoiceUrl } from './voice.js';
 
 const W = 1080;
 const H = 1920;
@@ -130,6 +133,20 @@ const MUSHIKA_SVG = `<svg viewBox="0 0 190 120" aria-hidden="true">
   <ellipse cx="82" cy="106" rx="11" ry="5" fill="#6d5242"/><ellipse cx="132" cy="106" rx="11" ry="5" fill="#6d5242"/>
 </svg>`;
 
+const CROWN_SVG = `<svg viewBox="0 0 60 40" aria-hidden="true"><path d="M4 36 L8 10 L20 24 L30 4 L40 24 L52 10 L56 36 Z" fill="url(#gold)" stroke="#8a4b0c" stroke-width="2"/><circle cx="30" cy="26" r="4.5" fill="#e0243e"/><circle cx="16" cy="30" r="3" fill="#1fae74"/><circle cx="44" cy="30" r="3" fill="#1fae74"/></svg>`;
+
+const FORTUNE_CUP_SVG = `<svg viewBox="0 0 120 170" aria-hidden="true">
+  <g fill="#e8c88a" stroke="#9b6512" stroke-width="1.5">
+    <rect x="34" y="18" width="7" height="60" rx="3" transform="rotate(-10 37 48)"/><rect x="46" y="10" width="7" height="66" rx="3" transform="rotate(-4 49 43)"/>
+    <rect x="58" y="14" width="7" height="62" rx="3"/><rect x="70" y="10" width="7" height="66" rx="3" transform="rotate(5 73 43)"/>
+    <rect x="80" y="20" width="7" height="58" rx="3" transform="rotate(11 83 49)"/>
+  </g>
+  <rect x="22" y="58" width="78" height="104" rx="12" fill="#b3192e" stroke="url(#gold)" stroke-width="5"/>
+  <rect x="22" y="72" width="78" height="8" fill="url(#gold)"/><rect x="22" y="140" width="78" height="8" fill="url(#gold)"/>
+  <circle cx="61" cy="110" r="16" fill="none" stroke="url(#gold)" stroke-width="4"/>
+  <text x="61" y="117" text-anchor="middle" font-size="20" font-weight="700" fill="#ffd772">ॐ</text>
+</svg>`;
+
 function buildGarland() {
   const anchors = [0, 270, 540, 810, 1080];
   let s = '<rect x="0" y="0" width="1080" height="14" fill="url(#gold)"/>';
@@ -183,25 +200,107 @@ function buildCeremonyRing() {
 buildGarland();
 buildArchBeads();
 buildCeremonyRing();
+$('#ganesha').innerHTML = GANESHA_SVG;
 
-// ---------- sound (synthesised temple bell) ----------
+// ---------- Ganesha reactions ----------
+// พิกัดในรูปองค์พระ (viewBox 440x460) → พิกัดบนฉาก
+const gnToStage = (x, y) => ({ x: 320 + x, y: 414 + y });
+const hasImage = () => $('#deity').classList.contains('has-img');
+function gnPlay(cls, ms) {
+  const g = $('#ganesha');
+  g.classList.remove(cls);
+  void g.offsetWidth;
+  g.classList.add(cls);
+  setTimeout(() => g.classList.remove(cls), ms);
+}
+const blessHand = () => gnPlay('gn-bless', 1900);
+const haloPulse = () => gnPlay('gn-halo-pulse', 2100);
+const trunkTaste = () => gnPlay('gn-taste', 1700);
+const trunkRaise = () => gnPlay('gn-raise', 3200);
+
+const garlands = [];
+function addGarland() {
+  const box = $('#gn-garlands');
+  if (!box) return;
+  if (garlands.length >= 3) garlands.shift().remove();
+  const layer = garlands.length;
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  g.innerHTML = garlandSVG(layer);
+  g.classList.add('gn-new');
+  box.appendChild(g);
+  garlands.push(g);
+  setTimeout(() => {
+    const i = garlands.indexOf(g);
+    if (i >= 0) { garlands.splice(i, 1); g.remove(); }
+  }, 6 * 60 * 1000);
+}
+
+let modakCount = 0;
+function addModak() {
+  const box = $('#gn-modaks');
+  if (!box) return;
+  if (modakCount >= MODAK_SLOTS.length) { burst(gnToStage(302, 240).x, gnToStage(302, 240).y, 16); return; }
+  const [x, y] = MODAK_SLOTS[modakCount++];
+  const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  c.setAttribute('cx', x);
+  c.setAttribute('cy', y);
+  c.setAttribute('r', '9');
+  c.setAttribute('fill', modakCount % 2 ? '#ffb53a' : '#f5a020');
+  c.classList.add('gn-new');
+  box.appendChild(c);
+}
+
+// ประทีปรอบซุ้ม จุดเพิ่มเมื่อมีคนถวายประทีป
+const ARC_LAMPS = (() => {
+  const q = (p0, p1, p2, t) => [
+    (1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t * t * p2[0],
+    (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t * t * p2[1],
+  ];
+  const pts = [];
+  for (const y of [430, 345, 260]) pts.push([40, y], [500, y]);
+  for (const t of [0.25, 0.55, 0.85]) {
+    pts.push(q([40, 230], [40, 80], [270, 34], t), q([500, 230], [500, 80], [270, 34], t));
+  }
+  return pts;
+})();
+const arcLamps = [];
+function lightArcLamp() {
+  const used = new Set(arcLamps.map((l) => l.i));
+  let i = ARC_LAMPS.findIndex((_, k) => !used.has(k));
+  if (i < 0) { const old = arcLamps.shift(); old.el.remove(); i = old.i; }
+  const [x, y] = ARC_LAMPS[i];
+  const lamp = el('div', 'arclamp');
+  lamp.style.left = `${x}px`;
+  lamp.style.top = `${y}px`;
+  lamp.appendChild(el('i', 'flame'));
+  $('#shrine').appendChild(lamp);
+  const entry = { i, el: lamp };
+  arcLamps.push(entry);
+  setTimeout(() => {
+    const k = arcLamps.indexOf(entry);
+    if (k >= 0) { arcLamps.splice(k, 1); lamp.classList.add('out'); setTimeout(() => lamp.remove(), 1200); }
+  }, 5 * 60 * 1000);
+}
+
+// ---------- sound (synthesised temple bell, conch, drone) ----------
 let ac = null;
 const MUTED = params.has('preview');
 function audio() {
-  if (!settings.sound || MUTED) return null;
+  if (MUTED) return null;
   try {
     if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
     if (ac.state === 'suspended') ac.resume().catch(() => {});
     return ac;
   } catch { return null; }
 }
-addEventListener('pointerdown', () => audio(), { once: true });
+addEventListener('pointerdown', () => { audio(); setTimeout(syncBgm, 100); }, { once: true });
+const sfx = () => (settings.sound ? Math.max(0, Math.min(1, (Number(settings.sfxVolume) || 0) / 100)) : 0);
 function bell(freq = 1046, vol = 0.16, dur = 2.4) {
   const a = audio();
-  if (!a || a.state !== 'running') return;
+  if (!a || a.state !== 'running' || !sfx()) return;
   const t = a.currentTime;
   const out = a.createGain();
-  out.gain.value = vol;
+  out.gain.value = vol * sfx();
   out.connect(a.destination);
   for (const [m, amp] of [[1, 1], [2.01, 0.5], [2.76, 0.35], [5.4, 0.18], [8.9, 0.08]]) {
     const o = a.createOscillator();
@@ -215,6 +314,105 @@ function bell(freq = 1046, vol = 0.16, dur = 2.4) {
   }
 }
 const gong = () => bell(98, 0.32, 6);
+const chime = () => bell(1568, 0.1, 1.6);
+
+// เสียงสังข์
+function conch() {
+  const a = audio();
+  if (!a || a.state !== 'running' || !sfx()) return;
+  const t = a.currentTime;
+  const o = a.createOscillator();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(220, t);
+  o.frequency.linearRampToValueAtTime(247, t + 0.6);
+  o.frequency.setValueAtTime(247, t + 2.2);
+  o.frequency.linearRampToValueAtTime(220, t + 2.9);
+  const lfo = a.createOscillator();
+  lfo.frequency.value = 5.5;
+  const lg = a.createGain();
+  lg.gain.value = 3;
+  lfo.connect(lg).connect(o.frequency);
+  const f = a.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.value = 1100;
+  f.Q.value = 4;
+  const g = a.createGain();
+  const v = 0.14 * sfx();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(v, t + 0.4);
+  g.gain.setValueAtTime(v, t + 2.3);
+  g.gain.linearRampToValueAtTime(0, t + 3);
+  o.connect(f).connect(g).connect(a.destination);
+  o.start(t); lfo.start(t);
+  o.stop(t + 3.1); lfo.stop(t + 3.1);
+}
+
+// ดนตรีบรรยากาศ: เสียงโดรนแบบทันปุระ (สร้างสดในเครื่อง ไม่มีลิขสิทธิ์เพลง)
+let bgm = null;
+let speaking = false;
+function syncBgm() {
+  if (!settings.bgm) {
+    if (bgm) { clearInterval(bgm.timer); bgm.pad.forEach((o) => o.stop()); bgm.master.disconnect(); bgm = null; }
+    return;
+  }
+  const a = audio();
+  if (!a || a.state !== 'running') return;
+  if (!bgm) {
+    const master = a.createGain();
+    master.gain.value = 0;
+    master.connect(a.destination);
+    const filter = a.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 900;
+    filter.Q.value = 0.7;
+    filter.connect(master);
+    const pad = [65.41, 98.0, 130.81].map((fq) => {
+      const o = a.createOscillator();
+      o.frequency.value = fq;
+      const g = a.createGain();
+      g.gain.value = 0.05;
+      o.connect(g).connect(filter);
+      o.start();
+      return o;
+    });
+    const notes = [98.0, 130.81, 130.81, 65.41];
+    let i = 0;
+    const pluck = () => {
+      const t = a.currentTime;
+      const fq = notes[i++ % notes.length];
+      for (const det of [-4, 0, 4]) {
+        const o = a.createOscillator();
+        o.type = 'sawtooth';
+        o.frequency.value = fq;
+        o.detune.value = det;
+        const g = a.createGain();
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(0.045, t + 0.03);
+        g.gain.exponentialRampToValueAtTime(0.0005, t + 4.5);
+        o.connect(g).connect(filter);
+        o.start(t);
+        o.stop(t + 4.6);
+      }
+    };
+    pluck();
+    bgm = { master, pad, timer: setInterval(pluck, 1250) };
+  }
+  const level = (Math.max(0, Math.min(100, Number(settings.bgmVolume) || 0)) / 100) * (speaking ? 0.35 : 1) * 0.8;
+  bgm.master.gain.setTargetAtTime(level, a.currentTime, 0.4);
+}
+
+// ---------- Thai voice ----------
+const DEMO_VOICES = new Set(window.DEMO_VOICES || []);
+const voice = createVoice({
+  getSettings: () => settings,
+  resolve: (it) => (DEMO ? (DEMO_VOICES.has(it.key) ? `voice/${it.key}.mp3` : null) : serverVoiceUrl(settings, it.text)),
+  onSpeaking: (on) => {
+    speaking = on;
+    $('#shrine').classList.toggle('speaking', on);
+    syncBgm();
+  },
+});
+const voiceHere = () => !MUTED && (DEMO || settings.voiceOutput !== 'control');
 
 // ---------- particles ----------
 const ctx = $('#fx').getContext('2d');
@@ -383,6 +581,9 @@ function spawn(user) {
   fig.innerHTML = bodySVG(user.id);
   fig.prepend(avatar(user));
   const bubble = el('div', 'bubble');
+  const crown = el('div', 'crown');
+  crown.innerHTML = CROWN_SVG;
+  fig.appendChild(crown);
   node.append(bubble, fig, el('div', 'tag', clipName(user.name)));
   const startX = slot.x < W / 2 ? -100 : W + 100;
   node.style.left = `${startX}px`;
@@ -471,42 +672,113 @@ const ALTAR_X = [540, 460, 620, 395, 685, 330, 750];
 const altar = new Array(ALTAR_X.length).fill(null);
 let altarNext = 0;
 
-function flyOffering(ev, d) {
-  const from = headPos(d);
+function ringBellSprite() {
+  const b = $('#bell');
+  b.classList.remove('ring');
+  void b.offsetWidth;
+  b.classList.add('ring');
+}
+
+function placeOnAltar(ev) {
   const idx = altarNext % ALTAR_X.length;
   altarNext++;
   const tx = ALTAR_X[idx];
   const ty = 862;
+  return {
+    x: tx,
+    y: ty,
+    land() {
+      if (altar[idx]) {
+        const old = altar[idx];
+        old.classList.add('fade');
+        setTimeout(() => old.remove(), 1000);
+      }
+      const item = el('div', 'offering');
+      item.innerHTML = OFFER_SVG[ev.offering.key]();
+      item.style.left = `${tx}px`;
+      item.style.top = `${ty - 37}px`;
+      $('#offerings').appendChild(item);
+      altar[idx] = item;
+    },
+  };
+}
+
+// ของถวายแต่ละชนิดไปลงที่ต่างกัน: พวงมาลัย→คล้องคอองค์พระ, ขนม→ชามในพระหัตถ์, อื่น ๆ→แท่นบูชา
+function offeringTarget(ev) {
+  const key = ev.offering.key;
+  if (!hasImage() && key === 'garland') {
+    const p = gnToStage(220, 246);
+    return { ...p, land: addGarland };
+  }
+  if (!hasImage() && key === 'laddu') {
+    const p = gnToStage(302, 262);
+    return { ...p, land() { addModak(); trunkTaste(); } };
+  }
+  return placeOnAltar(ev);
+}
+
+function flyOffering(ev, d) {
+  const from = headPos(d);
+  const target = offeringTarget(ev);
   const fly = el('div', 'flyer');
   fly.innerHTML = OFFER_SVG[ev.offering.key]();
   flyers.appendChild(fly);
-  const mx = (from.x + tx) / 2;
-  const my = Math.min(from.y, ty) - 220;
+  const mx = (from.x + target.x) / 2;
+  const my = Math.min(from.y, target.y) - 220;
   const a = fly.animate([
     { transform: `translate(${from.x}px, ${from.y}px) scale(.5)` },
     { transform: `translate(${mx}px, ${my}px) scale(1.35)`, offset: 0.5 },
-    { transform: `translate(${tx}px, ${ty}px) scale(1)` },
+    { transform: `translate(${target.x}px, ${target.y}px) scale(${ev.offering.key === 'garland' || ev.offering.key === 'laddu' ? 0.6 : 1})` },
   ], { duration: 1100, easing: 'ease-in-out', fill: 'forwards' });
   a.onfinish = () => {
     fly.remove();
-    if (altar[idx]) {
-      const old = altar[idx];
-      old.classList.add('fade');
-      setTimeout(() => old.remove(), 1000);
-    }
-    const item = el('div', 'offering');
-    item.innerHTML = OFFER_SVG[ev.offering.key]();
-    item.style.left = `${tx}px`;
-    item.style.top = `${ty - 37}px`;
-    $('#offerings').appendChild(item);
-    altar[idx] = item;
-    burst(tx, ty, 18);
-    bell(ev.big ? 784 : 1046, 0.16, 2.4);
-    const b = $('#bell');
-    b.classList.remove('ring');
-    void b.offsetWidth;
-    b.classList.add('ring');
+    target.land();
+    burst(target.x, target.y, 18);
+    offeringEffect(ev);
   };
+}
+
+// เอฟเฟกต์ตามชนิดของถวาย
+function offeringEffect(ev) {
+  switch (ev.offering.key) {
+    case 'marigold':
+      chime();
+      blessHand();
+      break;
+    case 'garland':
+      chime();
+      bell(1318, 0.1, 1.8);
+      blessHand();
+      petals(12);
+      break;
+    case 'laddu':
+      bell(1046, 0.16, 2.4);
+      blessHand();
+      break;
+    case 'diya':
+      bell(880, 0.16, 2.6);
+      lightArcLamp();
+      blessHand();
+      haloPulse();
+      break;
+    case 'fruit':
+      bell(784, 0.18, 2.8);
+      blessHand();
+      haloPulse();
+      petals(30);
+      break;
+    case 'grand':
+      conch();
+      blessHand();
+      haloPulse();
+      trunkRaise();
+      blaze();
+      burst(540, 560, 50);
+      break;
+    default:
+      bell();
+  }
+  ringBellSprite();
 }
 
 function mushika() {
@@ -586,6 +858,14 @@ function toast(text) {
   setTimeout(() => t.remove(), 3300);
 }
 
+// ป้ายใหญ่กลางจอ (ครบ 108 ครั้ง)
+function bigBanner(title, sub) {
+  const b = el('div', 'big-banner');
+  b.append(el('b', null, title), el('span', null, sub));
+  popups.appendChild(b);
+  setTimeout(() => { b.classList.add('out'); setTimeout(() => b.remove(), 500); }, 4200);
+}
+
 // ---------- ceremony (goal reached) ----------
 const ceremonyQ = [];
 let ceremonyBusy = false;
@@ -600,11 +880,15 @@ function runCeremony() {
   const c = $('#ceremony');
   $('#ceremonyText').textContent = `ร่วมพิธีอารตี รอบที่ ${round}`;
   c.classList.add('show');
-  gong();
-  setTimeout(() => bell(1318, 0.12, 2.2), 900);
-  setTimeout(() => bell(1046, 0.12, 2.2), 1800);
+  conch();
+  setTimeout(gong, 1600);
+  setTimeout(() => bell(1318, 0.12, 2.2), 2400);
+  setTimeout(() => bell(1046, 0.12, 2.2), 3200);
   rainUntil = performance.now() + 6500;
   blaze();
+  haloPulse();
+  trunkRaise();
+  blessHand();
   petals(80);
   let i = 0;
   for (const d of devotees.values()) { bow(d, (i++ % 6) * 120); bow(d, 2200 + (i % 6) * 120); }
@@ -612,6 +896,67 @@ function runCeremony() {
     c.classList.remove('show');
     setTimeout(runCeremony, 900);
   }, 7500);
+}
+
+// ---------- fortune sticks (เซียมซี) ----------
+const fortuneQ = [];
+let fortuneBusy = false;
+function queueFortune(ev) {
+  fortuneQ.push(ev);
+  if (fortuneQ.length > 4) fortuneQ.shift();
+  if (!fortuneBusy) nextFortune();
+}
+function nextFortune() {
+  const ev = fortuneQ.shift();
+  if (!ev) { fortuneBusy = false; return; }
+  fortuneBusy = true;
+  const card = el('div', 'fortune');
+  const cup = el('div', 'cup');
+  cup.innerHTML = FORTUNE_CUP_SVG;
+  const stick = el('div', 'stick', String(ev.fortune.n));
+  cup.appendChild(stick);
+  const txt = el('div', 'txt');
+  txt.append(
+    el('div', 'head', `เซียมซีใบที่ ${ev.fortune.n}`),
+    el('div', 'who', `ของคุณ ${clipName(ev.user.name)}`),
+    el('div', 'msg', ev.fortune.text),
+  );
+  card.append(cup, txt);
+  popups.appendChild(card);
+  bell(1760, 0.06, 0.6);
+  setTimeout(() => bell(1975, 0.06, 0.6), 250);
+  setTimeout(() => { chime(); burst(300, 420, 16); }, 1300);
+  setTimeout(() => {
+    card.classList.add('out');
+    setTimeout(() => { card.remove(); nextFortune(); }, 450);
+  }, 7000);
+}
+
+// ---------- bell ----------
+function ringTempleBell(ev) {
+  ringBellSprite();
+  bell(1046, 0.2, 3);
+  setTimeout(() => bell(1046, 0.14, 2.4), 450);
+  floater(930, 860, `🔔 ${clipName(ev.user.name)}`);
+  burst(930, 900, 14);
+}
+
+// ---------- 108 chant counter ----------
+function renderMala(st) {
+  const goal = st.chantGoal || 108;
+  $('#malaNum').textContent = `${st.chant}/${goal}`;
+  $('#malaFill').style.width = `${Math.min(100, (st.chant / goal) * 100)}%`;
+  $('#malaLabel').textContent = st.chantRounds ? `📿 สาธุร่วมกัน ×${st.chantRounds}` : '📿 สาธุร่วมกัน';
+}
+function chantComplete(ev) {
+  bigBanner(`ครบ ${settings.chantGoal || 108} ครั้ง 🙏`, 'ขอบคุณทุกท่านที่ร่วมสาธุพร้อมกัน');
+  floater(540, 470, 'ॐ');
+  haloPulse();
+  blaze();
+  bell(1318, 0.14, 2.4);
+  petals(60);
+  let i = 0;
+  for (const d of devotees.values()) bow(d, (i++ % 8) * 90);
 }
 
 // ---------- event dispatch ----------
@@ -639,6 +984,19 @@ function onChat(ev, d) {
       say(d, ev.text);
       floater(540, 470, 'ॐ');
       burst(540, 620, 22);
+      haloPulse();
+      break;
+    case 'fortune':
+      if (ev.fortune) {
+        say(d, `🎋 เซียมซีใบที่ ${ev.fortune.n}`);
+        queueFortune(ev);
+      } else {
+        say(d, `เสี่ยงใหม่ได้ในอีก ${ev.fortuneWait} นาที`);
+      }
+      break;
+    case 'bell':
+      say(d, ev.text);
+      if (ev.bell) ringTempleBell(ev);
       break;
     default:
       say(d, ev.text);
@@ -665,18 +1023,21 @@ function handleEvent(ev) {
       break;
     default: break;
   }
+  if (ev.chantDone) chantComplete(ev);
   if (ev.ceremony) queueCeremony(ev.ceremony);
 }
 
 // ---------- panels & meter ----------
 let lastTop = '';
 let lastWish = '';
+let topId = null;
 function renderState(st) {
   if (!st) return;
   const pct = Math.min(100, (st.points / st.goal) * 100);
   $('#meterFill').style.width = `${pct}%`;
   $('#meterNum').textContent = `${fmt(st.points)} / ${fmt(st.goal)}`;
   $('#meterLabel').textContent = `🪔 พลังศรัทธา · สู่พิธีอารตีรอบที่ ${st.round}`;
+  renderMala(st);
 
   const topKey = JSON.stringify(st.top);
   if (topKey !== lastTop) {
@@ -688,10 +1049,17 @@ function renderState(st) {
       const li = el('li');
       const who = el('div', 'who');
       who.append(el('div', 'name', g.name), el('div', 'coins', `${fmt(g.coins)} เหรียญ`));
-      li.append(el('div', 'rank', String(i + 1)), avatar({ id: g.name, name: g.name, avatar: g.avatar }), who);
+      li.append(el('div', 'rank', i === 0 ? '👑' : String(i + 1)), avatar({ id: g.id || g.name, name: g.name, avatar: g.avatar }), who);
       ol.appendChild(li);
     });
   }
+  // มงกุฎเหนือหัวผู้ร่วมถวายอันดับ 1
+  const newTop = st.top[0]?.id || null;
+  if (newTop !== topId) {
+    if (topId && devotees.get(topId)) devotees.get(topId).el.classList.remove('top1');
+    topId = newTop;
+  }
+  if (topId && devotees.get(topId)) devotees.get(topId).el.classList.add('top1');
 
   const wishKey = JSON.stringify(st.wishes);
   if (wishKey !== lastWish) {
@@ -700,7 +1068,7 @@ function renderState(st) {
     const ol = $('#wishList');
     ol.replaceChildren();
     if (!st.wishes.length) ol.appendChild(el('li', 'empty', 'พิมพ์ “ขอพร” ตามด้วยคำอธิษฐาน'));
-    st.wishes.slice(0, 4).forEach((w, i) => {
+    st.wishes.slice(0, 3).forEach((w, i) => {
       const li = el('li', i === 0 && w.t !== prevFirst ? 'fresh' : '');
       li.append(el('div', 'name', w.name), el('div', 'text', w.text));
       ol.appendChild(li);
@@ -721,6 +1089,7 @@ function applySettings(next) {
     img.removeAttribute('src');
     deity.classList.remove('has-img');
   }
+  syncBgm();
 }
 $('#deityImg').addEventListener('error', () => $('#deity').classList.remove('has-img'));
 
@@ -728,8 +1097,9 @@ $('#deityImg').addEventListener('error', () => $('#deity').classList.remove('has
 const HINTS = [
   'พิมพ์ “สาธุ” 🙏 ร่วมกราบไหว้',
   'พิมพ์ “ขอพร” ตามด้วยคำอธิษฐาน',
-  'พิมพ์ “จุดธูป” ถวายธูปบูชา',
-  'ของขวัญ → ของถวายบนแท่นบูชา',
+  'พิมพ์ “เซียมซี” เสี่ยงเซียมซี',
+  'พิมพ์ “จุดธูป” หรือ “ตีระฆัง”',
+  'ของขวัญ → ของถวายองค์พระ',
 ];
 let hintIdx = 0;
 const hintEl = $('#hint');
@@ -762,6 +1132,8 @@ function connect() {
     else if (msg.type === 'event') { handleEvent(msg.event); renderState(msg.state); }
     else if (msg.type === 'settings') applySettings(msg.settings);
     else if (msg.type === 'state') renderState(msg.state);
+    else if (msg.type === 'say' && voiceHere()) voice.say(msg.item);
+    else if (msg.type === 'voiceStop') voice.stop();
   };
   ws.onclose = () => {
     clearTimeout(warn);
@@ -774,18 +1146,22 @@ function startDemo() {
   settings.goal = Number(params.get('goal')) || 900;
   const game = createGame(() => settings);
   const sim = createSim();
+  const announcer = createAnnouncer(() => settings, { anonymous: true });
   const feed = (ev) => {
-    const out = game.apply(ev);
+    const out = ev.type === 'ceremony' ? game.startCeremony() : game.apply(ev);
+    const snap = game.snapshot();
     handleEvent(out);
-    renderState(game.snapshot());
+    renderState(snap);
+    for (const it of announcer.onEvent(out, snap)) voice.say(it);
   };
+  setInterval(() => { const it = announcer.idle(game.snapshot()); if (it) voice.say(it); }, 5000);
   window.demo = { feed, sim };
   renderState(game.snapshot());
   for (let i = 0; i < 14; i++) setTimeout(() => feed(sim.join()), 200 + i * 260);
   if (params.get('auto') === '0') return;
   const tick = () => {
     feed(sim.next());
-    setTimeout(tick, rand(500, 1300));
+    setTimeout(tick, rand(900, 2000));
   };
   setTimeout(tick, 4200);
 }

@@ -52,9 +52,20 @@ export function createSim() {
     return { type: 'join', user, sim: true };
   }
 
+  const BY_KIND = {
+    sathu: SATHU,
+    wish: WISHES,
+    incense: ['จุดธูป', 'จุดธูปถวายค่ะ'],
+    fortune: ['เซียมซี', 'ขอเสี่ยงเซียมซีค่ะ'],
+    bell: ['ตีระฆัง', 'ตีระฆัง 🔔'],
+    om: ['โอม ศรี คเณศายะ นะมะห์', 'โอม'],
+  };
   function chat(kind) {
-    const pool = kind === 'sathu' ? SATHU : kind === 'wish' ? WISHES : kind === 'incense' ? ['จุดธูป', 'จุดธูปถวายค่ะ']
-      : Math.random() < 0.45 ? SATHU : Math.random() < 0.55 ? WISHES : OTHER;
+    let pool = BY_KIND[kind];
+    if (!pool) {
+      const r = Math.random();
+      pool = r < 0.42 ? SATHU : r < 0.62 ? WISHES : r < 0.72 ? BY_KIND.fortune : r < 0.8 ? BY_KIND.bell : OTHER;
+    }
     return { type: 'chat', user: someone(), text: pick(pool), sim: true };
   }
 

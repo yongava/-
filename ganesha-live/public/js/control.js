@@ -1,5 +1,11 @@
-// หน้าควบคุม: เชื่อมต่อไลฟ์ ทดสอบฉาก และตั้งค่า
+// หน้าควบคุม: เชื่อมต่อไลฟ์ ทดสอบฉาก เสียงพูด และตั้งค่า
+import { VOICES } from './game.js';
+import { QUICK_LINES } from './lines.js';
+import { createVoice, serverVoiceUrl } from './voice.js';
+
 const $ = (sel) => document.querySelector(sel);
+let current = {};
+const voice = createVoice({ getSettings: () => current, resolve: (it) => serverVoiceUrl(current, it.text) });
 const base = `${location.protocol}//${location.host}`;
 $('#sceneUrl').textContent = `${base}/scene.html`;
 $('#sceneUrlClear').textContent = `${base}/scene.html?bg=0`;
@@ -24,6 +30,8 @@ function connect() {
     } else if (msg.type === 'status') showStatus(msg.status);
     else if (msg.type === 'log') addLog(msg.line);
     else if (msg.type === 'settings') fillSettings(msg.settings);
+    else if (msg.type === 'say' && current.voiceOutput === 'control') voice.say(msg.item);
+    else if (msg.type === 'voiceStop') voice.stop();
   };
 }
 
@@ -49,16 +57,19 @@ function addLog(line) {
 }
 
 let editing = false;
-function fillSettings(s) {
-  if (editing) return;
-  const f = $('#settingsForm');
+function fillForm(f, s) {
   for (const el of f.elements) {
     if (!el.name || !(el.name in s)) continue;
     if (el.type === 'checkbox') el.checked = Boolean(s[el.name]);
     else if (Array.isArray(s[el.name])) el.value = s[el.name].join(', ');
     else el.value = s[el.name];
   }
-  $('#deityMsg').textContent = s.deityImage ? 'ใส่รูปแล้ว' : 'ยังไม่ได้ใส่รูป (แสดง ॐ)';
+}
+function fillSettings(s) {
+  current = s;
+  fillForm($('#voiceForm'), s);
+  if (!editing) fillForm($('#settingsForm'), s);
+  $('#deityMsg').textContent = s.deityImage ? 'ใช้รูปของคุณอยู่' : 'ใช้องค์พระที่วาดไว้ในฉาก';
 }
 
 $('#settingsForm').addEventListener('focusin', () => { editing = true; });
@@ -75,6 +86,38 @@ $('#settingsForm').addEventListener('submit', (e) => {
   $('#saved').textContent = 'บันทึกแล้ว ✓';
   setTimeout(() => { $('#saved').textContent = ''; }, 2500);
 });
+
+// เสียงพูด: บันทึกทันทีที่เปลี่ยน
+const voiceSelect = $('#voiceForm select[name=voiceName]');
+for (const [value, label] of Object.entries(VOICES)) {
+  const o = document.createElement('option');
+  o.value = value;
+  o.textContent = label;
+  voiceSelect.appendChild(o);
+}
+$('#voiceForm').addEventListener('change', (e) => {
+  const el = e.target;
+  if (!el.name) return;
+  cmd({ cmd: 'settings', settings: { [el.name]: el.type === 'checkbox' ? el.checked : el.value } });
+});
+$('#voiceForm').addEventListener('submit', (e) => e.preventDefault());
+$('#voiceTest').addEventListener('click', () => cmd({ cmd: 'voiceTest' }));
+$('#voiceStop').addEventListener('click', () => cmd({ cmd: 'voiceStop' }));
+$('#ceremonyNow').addEventListener('click', () => cmd({ cmd: 'ceremony' }));
+$('#sayForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = $('#sayText').value.trim();
+  if (!text) return;
+  cmd({ cmd: 'say', text });
+  $('#sayText').value = '';
+});
+for (const line of QUICK_LINES) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = line;
+  b.addEventListener('click', () => cmd({ cmd: 'say', text: line }));
+  $('#quick').appendChild(b);
+}
 
 $('#connectForm').addEventListener('submit', (e) => {
   e.preventDefault();

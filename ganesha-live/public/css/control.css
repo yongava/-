@@ -70,9 +70,16 @@ button.danger { color: var(--bad); }
 .switch input { width: 18px; height: 18px; accent-color: var(--accent); }
 .form { display: flex; flex-direction: column; gap: 12px; }
 .form label:not(.switch) { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 15px; }
-.two { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; }
+.two { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; margin-top: 10px; }
 details summary { cursor: pointer; font-weight: 600; }
 .preview .frame { position: relative; width: 100%; aspect-ratio: 9 / 16; border-radius: 12px; overflow: hidden; background: #000; }
 .preview iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .log { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; font-size: 14px; }
 .log li { padding: 5px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+select { width: 100%; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: inherit; font: inherit; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; margin: 0; }
+legend { font-weight: 600; padding: 0 6px; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 6px 0; width: 100%; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chips button { font-size: 14px; padding: 6px 12px; border-radius: 99px; text-align: left; }

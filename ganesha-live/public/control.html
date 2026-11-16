@@ -55,18 +55,74 @@
         <button data-sim="gift" data-opt="huge">🐭 ของขวัญใหญ่มาก</button>
         <button data-sim="follow">➕ ติดตาม</button>
         <button data-sim="share">📣 แชร์</button>
+        <button data-sim="chat" data-opt="fortune">🎋 เซียมซี</button>
+        <button data-sim="chat" data-opt="bell">🔔 ตีระฆัง</button>
+        <button data-sim="chat" data-opt="om">🕉️ โอม</button>
       </div>
       <label class="switch"><input type="checkbox" id="autoSim"> จำลองไลฟ์อัตโนมัติ (คนเข้า คอมเมนต์ ของขวัญ สุ่มต่อเนื่อง)</label>
       <p class="muted small">อย่าลืมปิดการจำลองก่อนเริ่มไลฟ์จริง</p>
     </section>
 
     <section class="card">
-      <h2>4. ตั้งค่าฉาก</h2>
+      <h2>4. ผู้ดำเนินไลฟ์</h2>
+      <p class="muted small">พิมพ์ข้อความให้เสียงพูดอ่านในไลฟ์ หรือกดประโยคสำเร็จรูป</p>
+      <form id="sayForm" class="row">
+        <input id="sayText" maxlength="200" placeholder="เช่น ขอบคุณทุกคนที่มาร่วมสักการะค่ะ" autocomplete="off">
+        <button type="submit" class="primary">ให้พูด</button>
+      </form>
+      <div id="quick" class="chips"></div>
+      <div class="row" style="margin-top:12px">
+        <button type="button" id="ceremonyNow">🪔 เริ่มพิธีอารตีตอนนี้</button>
+        <button type="button" id="voiceStop">⏹ หยุดเสียงพูด</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>5. เสียงพูดและดนตรี</h2>
+      <form id="voiceForm" class="form">
+        <label class="switch"><input type="checkbox" name="voiceEnabled"> เปิดเสียงพูดภาษาไทย</label>
+        <div class="two">
+          <label>เสียง <select name="voiceName"></select></label>
+          <label>ความเร็ว
+            <select name="voiceRate">
+              <option value="-10%">ช้าลงเล็กน้อย</option><option value="+0%">ปกติ</option>
+              <option value="+10%">เร็วขึ้นเล็กน้อย</option><option value="+20%">เร็ว</option>
+            </select>
+          </label>
+          <label>ความดังเสียงพูด <input type="range" name="voiceVolume" min="0" max="100"></label>
+          <label>เล่นเสียงพูดที่
+            <select name="voiceOutput">
+              <option value="scene">หน้าฉาก (ใน TikTok LIVE Studio)</option>
+              <option value="control">หน้าควบคุมนี้</option>
+            </select>
+          </label>
+        </div>
+        <fieldset>
+          <legend>ให้พูดเมื่อ</legend>
+          <label class="switch"><input type="checkbox" name="speakGifts"> มีของขวัญ ผู้ติดตาม และการแชร์ (ขอบคุณพร้อมชื่อ)</label>
+          <label class="switch"><input type="checkbox" name="speakWishes"> มีคนขอพรหรือเสี่ยงเซียมซี (อ่านคำอธิษฐานและคำทำนาย)</label>
+          <label class="switch"><input type="checkbox" name="speakWelcome"> มีคนเข้ามาใหม่ (ทักทาย ไม่เกิน 1 ครั้งใน 25 วินาที)</label>
+          <label class="switch"><input type="checkbox" name="speakIdle"> ไลฟ์เงียบนาน (ชวนคนดูพิมพ์สาธุ ขอพร เซียมซี)</label>
+        </fieldset>
+        <div class="two">
+          <label>ชวนคนดูเมื่อเงียบเกิน (วินาที) <input type="number" name="idleSeconds" min="30" step="5"></label>
+        </div>
+        <div class="row"><button type="button" id="voiceTest">🔊 ทดสอบเสียงพูด</button></div>
+        <hr>
+        <label class="switch"><input type="checkbox" name="sound"> เสียงระฆัง สังข์ และเอฟเฟกต์</label>
+        <label>ความดังเอฟเฟกต์ <input type="range" name="sfxVolume" min="0" max="100"></label>
+        <label class="switch"><input type="checkbox" name="bgm"> ดนตรีบรรยากาศ (เสียงโดรนแบบทันปุระ เบา ๆ ตลอดไลฟ์)</label>
+        <label>ความดังดนตรี <input type="range" name="bgmVolume" min="0" max="100"></label>
+        <p class="muted small">ตั้งค่าในกล่องนี้บันทึกทันทีที่เปลี่ยน · ถ้าในไลฟ์ไม่มีเสียง ให้เปิดเสียงของแหล่งที่มาแบบลิงก์ใน LIVE Studio หรือเลือกเล่นเสียงที่หน้าควบคุมนี้แทน</p>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>6. ตั้งค่าฉาก</h2>
       <form id="settingsForm" class="form">
         <label>ชื่อฉาก <input name="title" maxlength="40"></label>
         <label>บทสวด <input name="mantra" maxlength="60"></label>
         <label>พลังศรัทธาที่ต้องสะสมเพื่อเริ่มพิธีอารตี <input name="goal" type="number" min="1" step="1"></label>
-        <label class="switch"><input type="checkbox" name="sound"> เสียงระฆังเมื่อมีของถวาย</label>
         <label>คำต้องห้าม (คั่นด้วยจุลภาค จะถูกแทนด้วย ***) <textarea name="bannedWords" rows="2"></textarea></label>
         <details>
           <summary>การคิดแต้มพลังศรัทธา</summary>
@@ -77,6 +133,7 @@
             <label>ติดตาม = <input name="pointsPerFollow" type="number" min="0"></label>
             <label>แชร์ = <input name="pointsPerShare" type="number" min="0"></label>
             <label>ของขวัญกี่เหรียญขึ้นไปให้หนูมุสิกะวิ่งมา <input name="bigGiftCoins" type="number" min="1"></label>
+            <label>เป้าสาธุร่วมกัน (ครั้ง) <input name="chantGoal" type="number" min="1"></label>
           </div>
         </details>
         <div class="row">
@@ -86,7 +143,7 @@
       </form>
 
       <h3>รูปองค์พระพิฆเนศ</h3>
-      <p class="muted small">ใช้รูปที่คุณถ่ายเองหรือมีสิทธิ์ใช้ ไฟล์ PNG พื้นหลังโปร่งใสจะสวยที่สุด ถ้าไม่ใส่ ฉากจะแสดงสัญลักษณ์ ॐ</p>
+      <p class="muted small">ฉากมีองค์พระพิฆเนศทองคำที่วาดไว้แล้ว ถ้าอยากใช้รูปองค์พระของคุณเอง (รูปที่ถ่ายเองหรือมีสิทธิ์ใช้ PNG พื้นหลังโปร่งใสสวยที่สุด) เลือกรูปที่นี่ · เอฟเฟกต์คล้องพวงมาลัยและถวายขนมจะย้ายไปลงที่แท่นบูชาแทน</p>
       <div class="row">
         <label class="file"><input type="file" id="deityFile" accept="image/png,image/jpeg,image/webp,image/gif"> เลือกรูป</label>
         <button type="button" id="deityRemove">ลบรูป</button>
