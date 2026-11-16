@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ฉากสักการะพระพิฆเนศ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kanit:wght@600;800&family=Sarabun:wght@500;700&family=Noto+Serif+Devanagari:wght@700&display=swap">
+<link rel="stylesheet" href="css/scene.css">
+</head>
+<body>
+<div id="stage">
+  <div id="bg">
+    <div class="pillar left"></div>
+    <div class="pillar right"></div>
+    <div class="floor"></div>
+  </div>
+
+  <svg id="garland" viewBox="0 0 1080 150" aria-hidden="true"></svg>
+
+  <header id="title">
+    <h1 id="titleText"></h1>
+    <div id="mantraText" class="mantra"></div>
+  </header>
+
+  <div id="meter">
+    <div class="meter-head"><span id="meterLabel">พลังศรัทธา</span><span id="meterNum"></span></div>
+    <div class="bar"><i id="meterFill"></i></div>
+  </div>
+
+  <aside id="wishPanel" class="panel">
+    <h3>คำอธิษฐาน</h3>
+    <ol id="wishList"></ol>
+  </aside>
+
+  <aside id="topPanel" class="panel">
+    <h3>ผู้ร่วมถวายสูงสุด</h3>
+    <ol id="topList"></ol>
+  </aside>
+
+  <section id="shrine">
+    <div class="aura"></div>
+    <div class="glow"></div>
+    <svg class="arch" viewBox="0 0 540 560" aria-hidden="true">
+      <defs>
+        <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#fff1b8"/><stop offset=".35" stop-color="#f2b638"/>
+          <stop offset=".7" stop-color="#b8740f"/><stop offset="1" stop-color="#ffd772"/>
+        </linearGradient>
+        <radialGradient id="archFill" cx=".5" cy=".55" r=".6">
+          <stop offset="0" stop-color="#7a1d1d" stop-opacity=".55"/><stop offset="1" stop-color="#2a0710" stop-opacity=".92"/>
+        </radialGradient>
+      </defs>
+      <path d="M40 560 L40 230 Q40 80 270 34 Q500 80 500 230 L500 560 Z" fill="url(#archFill)"/>
+      <path d="M40 560 L40 230 Q40 80 270 34 Q500 80 500 230 L500 560" fill="none" stroke="url(#gold)" stroke-width="16"/>
+      <path d="M64 560 L64 236 Q64 102 270 60 Q476 102 476 236 L476 560" fill="none" stroke="url(#gold)" stroke-width="4" opacity=".8"/>
+      <g id="archBeads" fill="#ffd772"></g>
+      <path d="M270 0 C252 18 248 30 258 40 L282 40 C292 30 288 18 270 0 Z" fill="url(#gold)"/>
+      <rect x="20" y="540" width="70" height="20" rx="4" fill="url(#gold)"/>
+      <rect x="450" y="540" width="70" height="20" rx="4" fill="url(#gold)"/>
+    </svg>
+    <div id="deity">
+      <img id="deityImg" alt="">
+      <div id="om" class="om">ॐ</div>
+    </div>
+    <svg class="lotus" viewBox="0 0 400 110" aria-hidden="true">
+      <defs>
+        <linearGradient id="petal" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#ffd0dc"/><stop offset="1" stop-color="#d9547a"/>
+        </linearGradient>
+      </defs>
+      <g fill="url(#petal)" stroke="#ffe2a0" stroke-width="2">
+        <path d="M200 6 C230 30 232 64 200 92 C168 64 170 30 200 6 Z"/>
+        <path d="M150 20 C184 34 196 66 182 96 C146 84 132 52 150 20 Z"/>
+        <path d="M250 20 C216 34 204 66 218 96 C254 84 268 52 250 20 Z"/>
+        <path d="M96 40 C136 44 160 72 156 100 C116 100 92 76 96 40 Z"/>
+        <path d="M304 40 C264 44 240 72 244 100 C284 100 308 76 304 40 Z"/>
+        <path d="M44 66 C88 60 120 82 126 104 C84 112 52 96 44 66 Z"/>
+        <path d="M356 66 C312 60 280 82 274 104 C316 112 348 96 356 66 Z"/>
+      </g>
+      <rect x="60" y="96" width="280" height="14" rx="7" fill="url(#gold)"/>
+    </svg>
+    <div class="lamp left"><i class="flame"></i></div>
+    <div class="lamp right"><i class="flame"></i></div>
+  </section>
+
+  <section id="altar">
+    <div class="top"></div>
+    <div class="cloth"><span id="hint"></span></div>
+  </section>
+  <div id="offerings"></div>
+
+  <svg id="bowl" viewBox="0 0 200 120" aria-hidden="true">
+    <ellipse cx="100" cy="22" rx="86" ry="16" fill="#c9b48a"/>
+    <path d="M14 22 Q20 100 100 108 Q180 100 186 22 Q100 44 14 22 Z" fill="url(#gold)"/>
+    <path d="M30 60 Q100 80 170 60" stroke="#8a1c1c" stroke-width="8" fill="none"/>
+    <rect x="70" y="104" width="60" height="14" rx="5" fill="#9b6512"/>
+  </svg>
+
+  <div id="bell" aria-hidden="true">
+    <svg viewBox="0 0 120 170">
+      <rect x="56" y="0" width="8" height="26" fill="#b8740f"/>
+      <path d="M60 20 C30 22 26 60 24 96 C22 120 12 128 10 136 L110 136 C108 128 98 120 96 96 C94 60 90 22 60 20 Z" fill="url(#gold)"/>
+      <rect x="6" y="132" width="108" height="12" rx="6" fill="#b8740f"/>
+      <circle cx="60" cy="156" r="11" fill="#9b6512"/>
+    </svg>
+  </div>
+
+  <div id="devotees"></div>
+  <canvas id="fx" width="1080" height="1920"></canvas>
+  <div id="flyers"></div>
+  <div id="popups"></div>
+  <div id="toasts"></div>
+
+  <div id="ceremony">
+    <div class="vignette"></div>
+    <div class="ring"></div>
+    <div class="banner"><b>ครบพลังศรัทธา 🙏</b><span id="ceremonyText"></span></div>
+  </div>
+
+  <div id="status"></div>
+</div>
+<script type="module" src="js/scene.js"></script>
+</body>
+</html>

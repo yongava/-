@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>หน้าควบคุมฉากสักการะ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kanit:wght@500;600&family=Sarabun:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="css/control.css">
+</head>
+<body>
+<header class="top">
+  <h1>🙏 ฉากสักการะพระพิฆเนศ <small>หน้าควบคุม</small></h1>
+  <div id="conn" class="pill">กำลังเชื่อมต่อโปรแกรม…</div>
+</header>
+
+<main>
+  <div class="col">
+    <section class="card">
+      <h2>1. เชื่อมต่อไลฟ์ TikTok</h2>
+      <form id="connectForm" class="row">
+        <input id="username" placeholder="@ชื่อช่องของคุณ" autocomplete="off" spellcheck="false">
+        <button type="submit" class="primary">เชื่อมต่อ</button>
+        <button type="button" id="disconnect">ตัดการเชื่อมต่อ</button>
+      </form>
+      <p class="status"><span id="dot" class="dot"></span><span id="statusText">ยังไม่ได้เชื่อมต่อไลฟ์</span> <span id="viewers" class="muted"></span></p>
+      <p class="muted small">กดเชื่อมต่อก่อนเริ่มไลฟ์ได้เลย ถ้ายังไม่ได้ไลฟ์ โปรแกรมจะรอและเชื่อมต่อให้เองเมื่อไลฟ์เริ่ม</p>
+    </section>
+
+    <section class="card">
+      <h2>2. ใส่ฉากใน TikTok LIVE Studio</h2>
+      <ol class="steps">
+        <li>เปิด TikTok LIVE Studio แล้วกด <b>เพิ่มแหล่งที่มา (Add Source)</b> เลือก <b>ลิงก์ (Link)</b></li>
+        <li>วางลิงก์ด้านล่าง ตั้งขนาด <b>กว้าง 1080 สูง 1920</b></li>
+        <li>ลากให้เต็มจอแนวตั้ง แล้วเริ่มไลฟ์</li>
+      </ol>
+      <div class="link"><code id="sceneUrl"></code><button type="button" data-copy="sceneUrl">คัดลอก</button></div>
+      <p class="muted small">ถ้าอยากให้เห็นกล้องด้านหลัง ใช้ลิงก์แบบพื้นหลังโปร่งใส:</p>
+      <div class="link"><code id="sceneUrlClear"></code><button type="button" data-copy="sceneUrlClear">คัดลอก</button></div>
+    </section>
+
+    <section class="card">
+      <h2>3. ทดสอบฉาก (ไม่ต้องไลฟ์จริง)</h2>
+      <div class="grid">
+        <button data-sim="join">👋 คนเข้ามา</button>
+        <button data-sim="chat" data-opt="sathu">🙏 สาธุ</button>
+        <button data-sim="chat" data-opt="wish">🪷 ขอพร</button>
+        <button data-sim="chat" data-opt="incense">🕯️ จุดธูป</button>
+        <button data-sim="chat">💬 คอมเมนต์สุ่ม</button>
+        <button data-sim="like">❤️ กดใจ</button>
+        <button data-sim="gift" data-opt="small">🌼 ของขวัญเล็ก</button>
+        <button data-sim="gift" data-opt="medium">🍬 ของขวัญกลาง</button>
+        <button data-sim="gift" data-opt="large">🪔 ของขวัญใหญ่</button>
+        <button data-sim="gift" data-opt="huge">🐭 ของขวัญใหญ่มาก</button>
+        <button data-sim="follow">➕ ติดตาม</button>
+        <button data-sim="share">📣 แชร์</button>
+      </div>
+      <label class="switch"><input type="checkbox" id="autoSim"> จำลองไลฟ์อัตโนมัติ (คนเข้า คอมเมนต์ ของขวัญ สุ่มต่อเนื่อง)</label>
+      <p class="muted small">อย่าลืมปิดการจำลองก่อนเริ่มไลฟ์จริง</p>
+    </section>
+
+    <section class="card">
+      <h2>4. ตั้งค่าฉาก</h2>
+      <form id="settingsForm" class="form">
+        <label>ชื่อฉาก <input name="title" maxlength="40"></label>
+        <label>บทสวด <input name="mantra" maxlength="60"></label>
+        <label>พลังศรัทธาที่ต้องสะสมเพื่อเริ่มพิธีอารตี <input name="goal" type="number" min="1" step="1"></label>
+        <label class="switch"><input type="checkbox" name="sound"> เสียงระฆังเมื่อมีของถวาย</label>
+        <label>คำต้องห้าม (คั่นด้วยจุลภาค จะถูกแทนด้วย ***) <textarea name="bannedWords" rows="2"></textarea></label>
+        <details>
+          <summary>การคิดแต้มพลังศรัทธา</summary>
+          <div class="two">
+            <label>ของขวัญ 1 เหรียญ = <input name="pointsPerCoin" type="number" min="0"></label>
+            <label>กดใจ 1 ครั้ง = <input name="pointsPerLike" type="number" min="0"></label>
+            <label>สาธุ / ขอพร / จุดธูป = <input name="pointsPerComment" type="number" min="0"></label>
+            <label>ติดตาม = <input name="pointsPerFollow" type="number" min="0"></label>
+            <label>แชร์ = <input name="pointsPerShare" type="number" min="0"></label>
+            <label>ของขวัญกี่เหรียญขึ้นไปให้หนูมุสิกะวิ่งมา <input name="bigGiftCoins" type="number" min="1"></label>
+          </div>
+        </details>
+        <div class="row">
+          <button type="submit" class="primary">บันทึกการตั้งค่า</button>
+          <span id="saved" class="muted"></span>
+        </div>
+      </form>
+
+      <h3>รูปองค์พระพิฆเนศ</h3>
+      <p class="muted small">ใช้รูปที่คุณถ่ายเองหรือมีสิทธิ์ใช้ ไฟล์ PNG พื้นหลังโปร่งใสจะสวยที่สุด ถ้าไม่ใส่ ฉากจะแสดงสัญลักษณ์ ॐ</p>
+      <div class="row">
+        <label class="file"><input type="file" id="deityFile" accept="image/png,image/jpeg,image/webp,image/gif"> เลือกรูป</label>
+        <button type="button" id="deityRemove">ลบรูป</button>
+        <span id="deityMsg" class="muted"></span>
+      </div>
+
+      <h3>เริ่มใหม่</h3>
+      <button type="button" id="reset" class="danger">รีเซ็ตพลังศรัทธาและอันดับผู้ร่วมถวาย</button>
+    </section>
+  </div>
+
+  <div class="col side">
+    <section class="card preview">
+      <h2>ตัวอย่างฉาก</h2>
+      <div class="frame"><iframe id="preview" title="ตัวอย่างฉาก"></iframe></div>
+    </section>
+    <section class="card">
+      <h2>เหตุการณ์ล่าสุด</h2>
+      <ol id="log" class="log"></ol>
+    </section>
+  </div>
+</main>
+<script type="module" src="js/control.js"></script>
+</body>
+</html>

@@ -1,0 +1,793 @@
+// หน้าฉาก: วาดคนดู ของถวาย และเอฟเฟกต์ตามเหตุการณ์จากไลฟ์
+// Scene renderer. Receives events from server.js over WebSocket (or from the built-in demo).
+import { createGame, DEFAULT_SETTINGS, clip } from './game.js';
+import { createSim } from './sim.js';
+
+const W = 1080;
+const H = 1920;
+const FIG_H = 196;
+const $ = (sel) => document.querySelector(sel);
+const params = new URLSearchParams(location.search);
+const DEMO = params.has('demo') || window.SCENE_DEMO === true;
+let settings = { ...DEFAULT_SETTINGS };
+if (params.get('bg') === '0') document.body.classList.add('transparent');
+
+const stage = $('#stage');
+const layer = $('#devotees');
+const flyers = $('#flyers');
+const popups = $('#popups');
+const toasts = $('#toasts');
+
+function fit() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  stage.style.transform = `translate(-50%, -50%) scale(${s})`;
+}
+addEventListener('resize', fit);
+fit();
+
+// ---------- helpers ----------
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const fmt = (n) => Math.round(n).toLocaleString('en-US');
+const clipName = (n) => clip(n, 10);
+function hash(str) {
+  let h = 2166136261;
+  for (const c of String(str)) { h ^= c.codePointAt(0); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+const seg = typeof Intl !== 'undefined' && Intl.Segmenter ? new Intl.Segmenter('th', { granularity: 'grapheme' }) : null;
+function initial(name) {
+  const gs = seg ? [...seg.segment(name)].map((x) => x.segment) : Array.from(name);
+  return (gs.find((g) => !/^[เแโใไ\s]/.test(g)) || gs[0] || '?').toUpperCase();
+}
+
+const AV_COLORS = ['#b5452b', '#c27a10', '#7a2e8f', '#2e6f8f', '#3f7a3a', '#a33b62', '#8a5a2b', '#5b4bb0'];
+function avatar(user) {
+  const d = el('div', 'avatar');
+  d.style.setProperty('--c', AV_COLORS[hash(user.id || user.name) % AV_COLORS.length]);
+  d.textContent = initial(user.name || '?');
+  if (user.avatar) {
+    const img = new Image();
+    img.alt = '';
+    img.referrerPolicy = 'no-referrer';
+    img.decoding = 'async';
+    img.onload = () => { d.textContent = ''; d.appendChild(img); };
+    img.src = user.avatar;
+  }
+  return d;
+}
+
+// ---------- artwork ----------
+const NECKLACE = (() => {
+  let s = '';
+  for (let i = 0; i <= 10; i++) {
+    const t = i / 10;
+    s += `<circle cx="${(50 + 50 * t).toFixed(1)}" cy="${(14 + 26 * Math.sin(Math.PI * t)).toFixed(1)}" r="5.5" fill="${i % 2 ? '#f28c18' : '#ffc21a'}"/>`;
+  }
+  return s;
+})();
+const ROBES = [
+  ['#f4ede0', '#d8cbb3', '#f2b638'], ['#f28c18', '#c4620a', '#fff1b8'], ['#8f1d2c', '#5e0c18', '#f2b638'],
+  ['#e8749a', '#b44a6f', '#fff1b8'], ['#f2c94c', '#c49b0c', '#8f1d2c'], ['#ffffff', '#d6d6d6', '#e8749a'],
+  ['#6a3fa0', '#432470', '#f2b638'],
+];
+const SKIN = ['#f1c7a1', '#e0ac7e', '#c98d5f', '#f5d3b3'];
+function bodySVG(id) {
+  const h = hash(id);
+  const [robe, dark, sash] = ROBES[h % ROBES.length];
+  const skin = SKIN[(h >>> 4) % SKIN.length];
+  return `<svg class="body" viewBox="0 0 150 140" aria-hidden="true">
+    <ellipse cx="75" cy="133" rx="66" ry="7" fill="rgba(0,0,0,.4)"/>
+    <path d="M42 16 Q75 0 108 16 L128 108 Q132 130 110 130 L40 130 Q18 130 22 108 Z" fill="${robe}"/>
+    <path d="M42 16 L112 104 L102 114 L34 30 Z" fill="${sash}" opacity=".85"/>
+    <path d="M48 30 Q38 66 70 76" stroke="${dark}" stroke-width="14" fill="none" stroke-linecap="round"/>
+    <path d="M102 30 Q112 66 80 76" stroke="${dark}" stroke-width="14" fill="none" stroke-linecap="round"/>
+    <path d="M67 80 Q64 56 75 38 Q86 56 83 80 Z" fill="${skin}" stroke="rgba(0,0,0,.25)" stroke-width="1.5"/>
+    <path d="M75 42 L75 79" stroke="rgba(0,0,0,.2)" stroke-width="1.5"/>
+    <path d="M26 112 Q75 100 124 112 L126 130 L24 130 Z" fill="${dark}"/>
+    <g class="necklace">${NECKLACE}</g>
+  </svg>`;
+}
+
+const OFFER_SVG = {
+  marigold: () => `<svg viewBox="0 0 64 64"><circle cx="32" cy="34" r="26" fill="#d9580a"/><circle cx="32" cy="34" r="21" fill="none" stroke="#f7951d" stroke-width="10" stroke-dasharray="5 3"/><circle cx="32" cy="34" r="13" fill="#ffb627"/><circle cx="32" cy="34" r="9" fill="none" stroke="#ffd34d" stroke-width="5" stroke-dasharray="3 2"/><circle cx="32" cy="34" r="4" fill="#c2410c"/></svg>`,
+  garland: () => {
+    let s = '<svg viewBox="0 0 64 64">';
+    for (let i = 0; i <= 12; i++) {
+      const a = Math.PI * (0.05 + 0.9 * i / 12);
+      s += `<circle cx="${(32 + 26 * Math.cos(a)).toFixed(1)}" cy="${(10 + 40 * Math.sin(a)).toFixed(1)}" r="6.5" fill="${i % 2 ? '#f28c18' : '#ffc21a'}"/>`;
+    }
+    return s + '<path d="M26 52 L32 63 L38 52 Z" fill="#d94a2b"/></svg>';
+  },
+  laddu: () => `<svg viewBox="0 0 64 64"><ellipse cx="32" cy="54" rx="29" ry="8" fill="url(#gold)"/><g fill="#f5a524" stroke="#c46f0c" stroke-width="1.5"><circle cx="16" cy="45" r="9"/><circle cx="32" cy="46" r="9"/><circle cx="48" cy="45" r="9"/><circle cx="24" cy="31" r="9"/><circle cx="40" cy="31" r="9"/><circle cx="32" cy="17" r="9"/></g><g fill="#ffe08a" opacity=".8"><circle cx="13" cy="42" r="2.5"/><circle cx="29" cy="43" r="2.5"/><circle cx="45" cy="42" r="2.5"/><circle cx="21" cy="28" r="2.5"/><circle cx="37" cy="28" r="2.5"/><circle cx="29" cy="14" r="2.5"/></g></svg>`,
+  diya: () => `<svg viewBox="0 0 64 64"><path d="M4 40 Q32 66 60 40 Q50 35 32 37 Q14 35 4 40 Z" fill="#b5541c"/><path d="M4 40 Q32 48 60 40" stroke="#f2b638" stroke-width="3" fill="none"/><path d="M32 4 C23 17 23 28 32 35 C41 28 41 17 32 4 Z" fill="#ffb627"/><path d="M32 15 C28 21 28 28 32 32 C36 28 36 21 32 15 Z" fill="#fff6c2"/></svg>`,
+  fruit: () => `<svg viewBox="0 0 64 64"><ellipse cx="32" cy="54" rx="29" ry="8" fill="url(#gold)"/><path d="M12 32 Q30 6 54 20 Q34 18 18 36 Z" fill="#ffd93b" stroke="#c49b0c" stroke-width="1.5"/><path d="M16 38 Q34 14 56 28 Q38 26 22 42 Z" fill="#ffe25a" stroke="#c49b0c" stroke-width="1.5"/><circle cx="19" cy="44" r="11" fill="#d62f2f"/><circle cx="45" cy="44" r="11" fill="#7cb342"/><circle cx="32" cy="47" r="9" fill="#ff9f1c"/><circle cx="16" cy="40" r="3" fill="#fff" opacity=".5"/></svg>`,
+  grand: () => `<svg viewBox="0 0 64 64"><path d="M24 62 L40 62 L37 50 L27 50 Z" fill="url(#gold)"/><path d="M6 40 Q32 58 58 40 Z" fill="url(#gold)" stroke="#9b6512" stroke-width="1.5"/><path d="M14 40 L32 4 L50 40 Z" fill="#f28c18"/><g fill="#ffc21a"><circle cx="32" cy="14" r="4"/><circle cx="27" cy="24" r="4"/><circle cx="37" cy="24" r="4"/><circle cx="22" cy="34" r="4"/><circle cx="32" cy="34" r="4"/><circle cx="42" cy="34" r="4"/></g><circle cx="32" cy="4" r="4" fill="#fff1b8"/></svg>`,
+};
+
+const LOTUS_LAMP = `<svg viewBox="0 0 86 70" aria-hidden="true"><path d="M43 2 C35 13 35 23 43 30 C51 23 51 13 43 2 Z" fill="#ffd34d"/><path d="M43 12 C40 17 40 23 43 27 C46 23 46 17 43 12 Z" fill="#fff6c2"/><g fill="#ff9fb8" stroke="#fff0c0" stroke-width="1.5"><path d="M43 30 C30 34 24 48 28 62 C40 58 46 44 43 30 Z"/><path d="M43 30 C56 34 62 48 58 62 C46 58 40 44 43 30 Z"/><path d="M8 44 C22 40 34 48 38 62 C22 64 12 56 8 44 Z"/><path d="M78 44 C64 40 52 48 48 62 C64 64 74 56 78 44 Z"/></g><ellipse cx="43" cy="63" rx="30" ry="6" fill="#f2b638"/></svg>`;
+
+const MUSHIKA_SVG = `<svg viewBox="0 0 190 120" aria-hidden="true">
+  <path d="M150 74 C178 66 186 42 176 20" stroke="#7a5c48" stroke-width="6" fill="none" stroke-linecap="round"/>
+  <ellipse cx="108" cy="74" rx="52" ry="34" fill="#8d6e5a"/>
+  <ellipse cx="100" cy="88" rx="34" ry="16" fill="#c9a88f"/>
+  <circle cx="54" cy="60" r="27" fill="#8d6e5a"/>
+  <circle cx="64" cy="33" r="15" fill="#8d6e5a"/><circle cx="64" cy="33" r="9" fill="#f2a7b5"/>
+  <circle cx="40" cy="37" r="12" fill="#8d6e5a"/><circle cx="40" cy="37" r="7" fill="#f2a7b5"/>
+  <path d="M42 36 L46 22 L52 31 L58 20 L63 34 Z" fill="url(#gold)" stroke="#9b6512" stroke-width="1"/>
+  <circle cx="44" cy="56" r="4.5" fill="#1a0a05"/><circle cx="45.5" cy="54.5" r="1.5" fill="#fff"/>
+  <circle cx="28" cy="66" r="5" fill="#e0607a"/>
+  <path d="M30 70 L8 64 M30 73 L10 78" stroke="#3a2a20" stroke-width="1.5"/>
+  <circle cx="44" cy="94" r="13" fill="#f5a524" stroke="#c46f0c" stroke-width="2"/><circle cx="40" cy="90" r="3" fill="#ffe08a"/>
+  <ellipse cx="82" cy="106" rx="11" ry="5" fill="#6d5242"/><ellipse cx="132" cy="106" rx="11" ry="5" fill="#6d5242"/>
+</svg>`;
+
+function buildGarland() {
+  const anchors = [0, 270, 540, 810, 1080];
+  let s = '<rect x="0" y="0" width="1080" height="14" fill="url(#gold)"/>';
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const x0 = anchors[i];
+    const x1 = anchors[i + 1];
+    for (let k = 0; k <= 22; k++) {
+      const t = k / 22;
+      const x = x0 + (x1 - x0) * t;
+      const y = 14 + 4 * 84 * t * (1 - t);
+      s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" fill="${k % 2 ? '#f28c18' : '#ffc21a'}"/>`;
+      s += `<circle cx="${x.toFixed(1)}" cy="${(y - 3).toFixed(1)}" r="4" fill="#ffe08a" opacity=".7"/>`;
+    }
+  }
+  for (const x of anchors.slice(1, -1)) {
+    s += `<line x1="${x}" y1="14" x2="${x}" y2="112" stroke="#c27a10" stroke-width="3"/>`;
+    for (let k = 0; k < 5; k++) s += `<circle cx="${x}" cy="${30 + k * 17}" r="9" fill="${k % 2 ? '#ffc21a' : '#f28c18'}"/>`;
+    s += `<path d="M${x - 12} 116 L${x} 142 L${x + 12} 116 Z" fill="#d94a2b"/>`;
+  }
+  $('#garland').innerHTML = s;
+}
+
+function buildArchBeads() {
+  const q = (p0, p1, p2, t) => [
+    (1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t * t * p2[0],
+    (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t * t * p2[1],
+  ];
+  let s = '';
+  for (let t = 0.1; t < 0.98; t += 0.11) {
+    for (const [a, b, c] of [[[52, 232], [52, 91], [270, 47]], [[488, 232], [488, 91], [270, 47]]]) {
+      const [x, y] = q(a, b, c, t);
+      s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5"/>`;
+    }
+  }
+  for (let y = 262; y < 540; y += 40) s += `<circle cx="52" cy="${y}" r="5"/><circle cx="488" cy="${y}" r="5"/>`;
+  $('#archBeads').innerHTML = s;
+}
+
+function buildCeremonyRing() {
+  const ring = $('#ceremony .ring');
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const orb = el('div', 'orb');
+    orb.style.left = `${Math.cos(a) * 310}px`;
+    orb.style.top = `${Math.sin(a) * 310}px`;
+    orb.appendChild(el('i', 'flame'));
+    ring.appendChild(orb);
+  }
+}
+
+buildGarland();
+buildArchBeads();
+buildCeremonyRing();
+
+// ---------- sound (synthesised temple bell) ----------
+let ac = null;
+const MUTED = params.has('preview');
+function audio() {
+  if (!settings.sound || MUTED) return null;
+  try {
+    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+    if (ac.state === 'suspended') ac.resume().catch(() => {});
+    return ac;
+  } catch { return null; }
+}
+addEventListener('pointerdown', () => audio(), { once: true });
+function bell(freq = 1046, vol = 0.16, dur = 2.4) {
+  const a = audio();
+  if (!a || a.state !== 'running') return;
+  const t = a.currentTime;
+  const out = a.createGain();
+  out.gain.value = vol;
+  out.connect(a.destination);
+  for (const [m, amp] of [[1, 1], [2.01, 0.5], [2.76, 0.35], [5.4, 0.18], [8.9, 0.08]]) {
+    const o = a.createOscillator();
+    const g = a.createGain();
+    o.frequency.value = freq * m;
+    g.gain.setValueAtTime(amp, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur / (m * 0.6 + 0.4));
+    o.connect(g).connect(out);
+    o.start(t);
+    o.stop(t + dur);
+  }
+}
+const gong = () => bell(98, 0.32, 6);
+
+// ---------- particles ----------
+const ctx = $('#fx').getContext('2d');
+const P = [];
+const addP = (p) => { if (P.length < 900) P.push(p); };
+let rainUntil = 0;
+let motes = 0;
+
+function petals(n) {
+  for (let i = 0; i < n; i++) {
+    addP({
+      k: 'petal', x: rand(40, W - 40), y: rand(-160, -10), vx: rand(-0.8, 0.8), vy: rand(1.8, 3.4),
+      rot: rand(0, 6.28), vr: rand(-0.08, 0.08), size: rand(10, 17), sway: rand(0, 6.28),
+      color: pick(['#f28c18', '#ffc21a', '#ff9f1c', '#e85d75', '#ffd34d']), life: 520, age: 0,
+    });
+  }
+}
+function burst(x, y, n, palette = 'gold') {
+  const colors = palette === 'gold' ? ['#fff1b8', '#ffd34d', '#f2b638'] : ['#ff9fb8', '#ffd34d', '#ffffff'];
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, 6.283);
+    const sp = rand(2, 7.5);
+    addP({ k: 'spark', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1, size: rand(2.5, 6), life: rand(40, 85), age: 0, color: pick(colors) });
+  }
+}
+
+const BOWL = { x0: 118, x1: 226, y: 950 };
+const sticks = [];
+function addStick() {
+  if (sticks.length >= 14) sticks.shift();
+  sticks.push({ x: rand(BOWL.x0, BOWL.x1), ang: rand(-0.22, 0.22), len: rand(105, 135), born: performance.now() });
+}
+for (let i = 0; i < 3; i++) addStick();
+
+function drawSticks(now, dt) {
+  for (let i = sticks.length - 1; i >= 0; i--) {
+    const s = sticks[i];
+    const age = (now - s.born) / 1000;
+    const len = s.len - age * 0.25;
+    if (len < 40) { sticks.splice(i, 1); continue; }
+    const tx = s.x + Math.sin(s.ang) * len;
+    const ty = BOWL.y - Math.cos(s.ang) * len;
+    ctx.strokeStyle = '#7a2e12';
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(s.x, BOWL.y); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.strokeStyle = '#c0391b';
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(s.x, BOWL.y); ctx.lineTo(s.x + Math.sin(s.ang) * 26, BOWL.y - Math.cos(s.ang) * 26); ctx.stroke();
+    const glow = 0.75 + Math.sin(now / 90 + i) * 0.25;
+    ctx.fillStyle = `rgba(255,120,30,${0.35 * glow})`;
+    ctx.beginPath(); ctx.arc(tx, ty, 9, 0, 6.283); ctx.fill();
+    ctx.fillStyle = `rgba(255,220,120,${glow})`;
+    ctx.beginPath(); ctx.arc(tx, ty, 3.5, 0, 6.283); ctx.fill();
+    if (Math.random() < 0.28 * dt) {
+      addP({ k: 'smoke', x: tx, y: ty - 4, vx: rand(-0.15, 0.15), vy: rand(-1.0, -0.6), r: 3, life: rand(150, 240), age: 0, seed: rand(0, 6.28) });
+    }
+  }
+}
+
+let lastT = performance.now();
+function frame(now) {
+  const dt = Math.min(3, (now - lastT) / 16.67);
+  lastT = now;
+  ctx.clearRect(0, 0, W, H);
+  drawSticks(now, dt);
+  if (now < rainUntil) {
+    for (let i = 0; i < 4 * dt; i++) addP({ k: 'rain', x: rand(0, W), y: rand(-40, 0), vy: rand(9, 15), len: rand(14, 30), size: rand(1.5, 3), life: 240, age: 0 });
+  }
+  while (motes < 34) {
+    motes++;
+    addP({ k: 'mote', x: rand(220, 860), y: rand(420, 1000), vx: rand(-0.2, 0.2), vy: rand(-0.5, -0.12), size: rand(1.4, 3), life: rand(220, 420), age: 0, tw: rand(0, 6.28) });
+  }
+  for (let i = P.length - 1; i >= 0; i--) {
+    const p = P[i];
+    p.age += dt;
+    if (p.age > p.life || p.y > H + 40) {
+      if (p.k === 'mote') motes--;
+      P.splice(i, 1);
+      continue;
+    }
+    const fade = 1 - p.age / p.life;
+    switch (p.k) {
+      case 'petal': {
+        p.sway += 0.05 * dt;
+        p.x += (p.vx + Math.sin(p.sway) * 0.9) * dt;
+        p.y += p.vy * dt;
+        p.rot += p.vr * dt;
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, fade * 3);
+        ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.ellipse(0, 0, p.size, p.size * 0.55, 0, 0, 6.283); ctx.fill();
+        ctx.restore();
+        break;
+      }
+      case 'spark': {
+        p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 0.08 * dt; p.vx *= 0.97;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = fade * 0.35;
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 2.4, 0, 6.283); ctx.fill();
+        ctx.globalAlpha = fade;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, 6.283); ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
+        break;
+      }
+      case 'smoke': {
+        p.x += (p.vx + Math.sin(p.age * 0.04 + p.seed) * 0.35) * dt; p.y += p.vy * dt; p.r += 0.12 * dt;
+        ctx.fillStyle = `rgba(230,220,210,${0.16 * fade})`;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 6.283); ctx.fill();
+        break;
+      }
+      case 'mote': {
+        p.x += p.vx * dt; p.y += p.vy * dt; p.tw += 0.08 * dt;
+        ctx.fillStyle = `rgba(255,214,120,${(0.4 + Math.sin(p.tw) * 0.3) * Math.min(1, fade * 4)})`;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, 6.283); ctx.fill();
+        break;
+      }
+      case 'rain': {
+        p.y += p.vy * dt;
+        ctx.strokeStyle = `rgba(255,215,110,${0.85 * fade})`;
+        ctx.lineWidth = p.size;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x, p.y - p.len); ctx.stroke();
+        break;
+      }
+      default: break;
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- devotees ----------
+const ROWS = [
+  { y: 1122, s: 0.62, n: 6 }, { y: 1258, s: 0.70, n: 6 }, { y: 1410, s: 0.80, n: 6 },
+  { y: 1572, s: 0.90, n: 5 }, { y: 1742, s: 1.0, n: 5 }, { y: 1916, s: 1.1, n: 4 },
+];
+const slots = [];
+ROWS.forEach((r, ri) => {
+  const margin = 92;
+  const span = W - margin * 2;
+  for (let i = 0; i < r.n; i++) {
+    slots.push({ x: margin + (span * (i + 0.5)) / r.n + (ri % 2 ? 26 : -26), y: r.y, s: r.s, row: ri, who: null });
+  }
+});
+// คนมาก่อนได้นั่งแถวหน้าใกล้แท่นบูชา เริ่มจากตรงกลาง
+slots.sort((a, b) => a.row - b.row || Math.abs(a.x - W / 2) - Math.abs(b.x - W / 2));
+
+const devotees = new Map();
+
+function spawn(user) {
+  let d = devotees.get(user.id);
+  if (d) { d.last = Date.now(); return d; }
+  let slot = slots.find((s) => !s.who);
+  if (!slot) {
+    let oldest = null;
+    for (const v of devotees.values()) if (!oldest || v.last < oldest.last) oldest = v;
+    slot = oldest.slot;
+    leave(oldest);
+  }
+  const node = el('div', 'devotee walking');
+  node.style.setProperty('--s', slot.s);
+  node.style.zIndex = String(10 + slot.row);
+  const fig = el('div', 'fig');
+  fig.innerHTML = bodySVG(user.id);
+  fig.prepend(avatar(user));
+  const bubble = el('div', 'bubble');
+  node.append(bubble, fig, el('div', 'tag', clipName(user.name)));
+  const startX = slot.x < W / 2 ? -100 : W + 100;
+  node.style.left = `${startX}px`;
+  node.style.top = `${slot.y}px`;
+  layer.appendChild(node);
+  const dur = Math.min(3.2, Math.max(1.2, Math.abs(slot.x - startX) / 380));
+  node.getBoundingClientRect();
+  node.style.transition = `left ${dur}s linear`;
+  node.style.left = `${slot.x}px`;
+  d = { user, slot, el: node, bubble, last: Date.now(), bubbleTimer: 0 };
+  slot.who = d;
+  devotees.set(user.id, d);
+  setTimeout(() => node.classList.remove('walking'), dur * 1000);
+  return d;
+}
+
+function leave(d) {
+  devotees.delete(d.user.id);
+  d.slot.who = null;
+  d.el.classList.add('leaving');
+  setTimeout(() => d.el.remove(), 1100);
+}
+
+function headPos(d) {
+  if (!d) return { x: W / 2, y: 1500 };
+  const x = parseFloat(getComputedStyle(d.el).left) || d.slot.x;
+  return { x, y: d.slot.y - (FIG_H - 36) * d.slot.s };
+}
+
+function say(d, text, cls = '') {
+  if (!d || !text) return;
+  d.bubble.textContent = clip(text, 60);
+  d.bubble.className = `bubble show ${cls}`;
+  d.el.style.zIndex = '18';
+  clearTimeout(d.bubbleTimer);
+  d.bubbleTimer = setTimeout(() => {
+    d.bubble.classList.remove('show');
+    d.el.style.zIndex = String(10 + d.slot.row);
+  }, 5200);
+}
+
+function bow(d, delay = 0) {
+  if (!d) return;
+  setTimeout(() => {
+    d.el.classList.remove('bow');
+    void d.el.offsetWidth;
+    d.el.classList.add('bow');
+    setTimeout(() => d.el.classList.remove('bow'), 1500);
+  }, delay);
+}
+
+function floater(x, y, text) {
+  const f = el('div', 'floater', text);
+  f.style.left = `${x}px`;
+  f.style.top = `${y}px`;
+  flyers.appendChild(f);
+  setTimeout(() => f.remove(), 1900);
+}
+
+function blaze() {
+  const s = $('#shrine');
+  s.classList.remove('blaze');
+  void s.offsetWidth;
+  s.classList.add('blaze');
+}
+
+function lantern(d, name) {
+  const p = headPos(d);
+  const node = el('div', 'lantern');
+  node.innerHTML = LOTUS_LAMP;
+  node.appendChild(el('span', null, clipName(name)));
+  flyers.appendChild(node);
+  const tx = 540;
+  const ty = 560;
+  const a = node.animate([
+    { transform: `translate(${p.x}px, ${p.y - 60}px) scale(.7)`, opacity: 0 },
+    { transform: `translate(${p.x}px, ${p.y - 150}px) scale(1)`, opacity: 1, offset: 0.15 },
+    { transform: `translate(${(p.x + tx) / 2 + rand(-90, 90)}px, ${(p.y + ty) / 2 - 140}px) scale(.95)`, opacity: 1, offset: 0.6 },
+    { transform: `translate(${tx}px, ${ty}px) scale(.35)`, opacity: 0 },
+  ], { duration: 4200, easing: 'ease-in-out', fill: 'forwards' });
+  a.onfinish = () => { node.remove(); burst(tx, ty + 60, 26); blaze(); };
+}
+
+// ---------- offerings on the altar ----------
+const ALTAR_X = [540, 460, 620, 395, 685, 330, 750];
+const altar = new Array(ALTAR_X.length).fill(null);
+let altarNext = 0;
+
+function flyOffering(ev, d) {
+  const from = headPos(d);
+  const idx = altarNext % ALTAR_X.length;
+  altarNext++;
+  const tx = ALTAR_X[idx];
+  const ty = 862;
+  const fly = el('div', 'flyer');
+  fly.innerHTML = OFFER_SVG[ev.offering.key]();
+  flyers.appendChild(fly);
+  const mx = (from.x + tx) / 2;
+  const my = Math.min(from.y, ty) - 220;
+  const a = fly.animate([
+    { transform: `translate(${from.x}px, ${from.y}px) scale(.5)` },
+    { transform: `translate(${mx}px, ${my}px) scale(1.35)`, offset: 0.5 },
+    { transform: `translate(${tx}px, ${ty}px) scale(1)` },
+  ], { duration: 1100, easing: 'ease-in-out', fill: 'forwards' });
+  a.onfinish = () => {
+    fly.remove();
+    if (altar[idx]) {
+      const old = altar[idx];
+      old.classList.add('fade');
+      setTimeout(() => old.remove(), 1000);
+    }
+    const item = el('div', 'offering');
+    item.innerHTML = OFFER_SVG[ev.offering.key]();
+    item.style.left = `${tx}px`;
+    item.style.top = `${ty - 37}px`;
+    $('#offerings').appendChild(item);
+    altar[idx] = item;
+    burst(tx, ty, 18);
+    bell(ev.big ? 784 : 1046, 0.16, 2.4);
+    const b = $('#bell');
+    b.classList.remove('ring');
+    void b.offsetWidth;
+    b.classList.add('ring');
+  };
+}
+
+function mushika() {
+  const m = el('div', 'mushika run');
+  m.innerHTML = MUSHIKA_SVG;
+  flyers.appendChild(m);
+  const y = 786;
+  const a = m.animate([
+    { transform: `translate(${W + 40}px, ${y}px)` },
+    { transform: `translate(-240px, ${y}px)` },
+  ], { duration: 4400, easing: 'linear' });
+  const trail = setInterval(() => {
+    const tr = new DOMMatrixReadOnly(getComputedStyle(m).transform);
+    burst(tr.m41 + 150, y + 70, 4);
+  }, 120);
+  a.onfinish = () => { clearInterval(trail); m.remove(); };
+}
+
+// ---------- gift popups ----------
+const giftQ = [];
+let giftBusy = false;
+function queueGift(ev, d) {
+  giftQ.push([ev, d]);
+  if (giftQ.length > 14) giftQ.splice(0, giftQ.length - 14);
+  if (!giftBusy) nextGift();
+}
+function nextGift() {
+  const item = giftQ.shift();
+  if (!item) { giftBusy = false; return; }
+  giftBusy = true;
+  const [ev, d] = item;
+  const hold = ev.big ? 3800 : giftQ.length > 3 ? 1300 : 2300;
+  showGiftPop(ev, hold);
+  flyOffering(ev, d);
+  petals(Math.min(60, Math.round(6 + Math.sqrt(ev.coins) * 3)));
+  if (ev.big) {
+    mushika();
+    blaze();
+    burst(540, 620, 60);
+    rainUntil = performance.now() + 2600;
+    setTimeout(gong, 200);
+  }
+  setTimeout(nextGift, hold + 150);
+}
+function showGiftPop(ev, hold) {
+  const card = el('div', `gift-pop${ev.big ? ' big' : ''}`);
+  const icon = el('div', 'icon');
+  icon.innerHTML = OFFER_SVG[ev.offering.key]();
+  if (ev.gift.image) {
+    const img = new Image();
+    img.className = 'gift-img';
+    img.referrerPolicy = 'no-referrer';
+    img.alt = '';
+    img.onerror = () => img.remove();
+    img.src = ev.gift.image;
+    icon.appendChild(img);
+  }
+  const txt = el('div', 'txt');
+  const count = ev.gift.count > 1 ? ` × ${ev.gift.count}` : '';
+  txt.append(
+    el('div', 'who', ev.user.name),
+    el('div', 'what', `ร่วมถวาย ${ev.offering.name}${count}`),
+    el('div', 'bless', ev.blessing),
+  );
+  card.append(icon, txt);
+  popups.appendChild(card);
+  setTimeout(() => {
+    card.classList.add('out');
+    setTimeout(() => card.remove(), 400);
+  }, hold);
+}
+
+function toast(text) {
+  toasts.appendChild(el('div', 'toast', text));
+  while (toasts.children.length > 2) toasts.firstChild.remove();
+  const t = toasts.lastChild;
+  setTimeout(() => t.remove(), 3300);
+}
+
+// ---------- ceremony (goal reached) ----------
+const ceremonyQ = [];
+let ceremonyBusy = false;
+function queueCeremony(round) {
+  ceremonyQ.push(round);
+  if (!ceremonyBusy) runCeremony();
+}
+function runCeremony() {
+  const round = ceremonyQ.shift();
+  if (round == null) { ceremonyBusy = false; return; }
+  ceremonyBusy = true;
+  const c = $('#ceremony');
+  $('#ceremonyText').textContent = `ร่วมพิธีอารตี รอบที่ ${round}`;
+  c.classList.add('show');
+  gong();
+  setTimeout(() => bell(1318, 0.12, 2.2), 900);
+  setTimeout(() => bell(1046, 0.12, 2.2), 1800);
+  rainUntil = performance.now() + 6500;
+  blaze();
+  petals(80);
+  let i = 0;
+  for (const d of devotees.values()) { bow(d, (i++ % 6) * 120); bow(d, 2200 + (i % 6) * 120); }
+  setTimeout(() => {
+    c.classList.remove('show');
+    setTimeout(runCeremony, 900);
+  }, 7500);
+}
+
+// ---------- event dispatch ----------
+function onChat(ev, d) {
+  const p = headPos(d);
+  switch (ev.kind) {
+    case 'sathu':
+      say(d, ev.text);
+      bow(d);
+      floater(p.x, p.y - 30, 'สาธุ 🙏');
+      burst(p.x, p.y, 14);
+      break;
+    case 'wish':
+      say(d, `🙏 ${ev.wish}`, 'wish');
+      bow(d);
+      lantern(d, ev.user.name);
+      break;
+    case 'incense':
+      say(d, ev.text);
+      bow(d);
+      addStick();
+      floater(172, 900, `${clipName(ev.user.name)} จุดธูป`);
+      break;
+    case 'om':
+      say(d, ev.text);
+      floater(540, 470, 'ॐ');
+      burst(540, 620, 22);
+      break;
+    default:
+      say(d, ev.text);
+  }
+}
+
+function handleEvent(ev) {
+  if (!ev || !ev.type) return;
+  const d = ev.user ? spawn(ev.user) : null;
+  switch (ev.type) {
+    case 'chat': onChat(ev, d); break;
+    case 'gift':
+      if (d) d.el.classList.add('gifter');
+      queueGift(ev, d);
+      break;
+    case 'like': petals(Math.min(14, 2 + Math.ceil(ev.likes / 2))); break;
+    case 'follow':
+      toast(`🙏 ขอบคุณคุณ ${clipName(ev.user.name)} ที่ติดตาม`);
+      if (d) { d.el.classList.add('garland'); bow(d); }
+      bell(1568, 0.08, 1.4);
+      break;
+    case 'share':
+      toast(`📣 ขอบคุณคุณ ${clipName(ev.user.name)} ที่ช่วยแชร์ไลฟ์`);
+      break;
+    default: break;
+  }
+  if (ev.ceremony) queueCeremony(ev.ceremony);
+}
+
+// ---------- panels & meter ----------
+let lastTop = '';
+let lastWish = '';
+function renderState(st) {
+  if (!st) return;
+  const pct = Math.min(100, (st.points / st.goal) * 100);
+  $('#meterFill').style.width = `${pct}%`;
+  $('#meterNum').textContent = `${fmt(st.points)} / ${fmt(st.goal)}`;
+  $('#meterLabel').textContent = `🪔 พลังศรัทธา · สู่พิธีอารตีรอบที่ ${st.round}`;
+
+  const topKey = JSON.stringify(st.top);
+  if (topKey !== lastTop) {
+    lastTop = topKey;
+    const ol = $('#topList');
+    ol.replaceChildren();
+    if (!st.top.length) ol.appendChild(el('li', 'empty', 'ร่วมถวายเป็นท่านแรก'));
+    st.top.forEach((g, i) => {
+      const li = el('li');
+      const who = el('div', 'who');
+      who.append(el('div', 'name', g.name), el('div', 'coins', `${fmt(g.coins)} เหรียญ`));
+      li.append(el('div', 'rank', String(i + 1)), avatar({ id: g.name, name: g.name, avatar: g.avatar }), who);
+      ol.appendChild(li);
+    });
+  }
+
+  const wishKey = JSON.stringify(st.wishes);
+  if (wishKey !== lastWish) {
+    const prevFirst = lastWish ? JSON.parse(lastWish)[0]?.t : null;
+    lastWish = wishKey;
+    const ol = $('#wishList');
+    ol.replaceChildren();
+    if (!st.wishes.length) ol.appendChild(el('li', 'empty', 'พิมพ์ “ขอพร” ตามด้วยคำอธิษฐาน'));
+    st.wishes.slice(0, 4).forEach((w, i) => {
+      const li = el('li', i === 0 && w.t !== prevFirst ? 'fresh' : '');
+      li.append(el('div', 'name', w.name), el('div', 'text', w.text));
+      ol.appendChild(li);
+    });
+  }
+}
+
+function applySettings(next) {
+  settings = { ...DEFAULT_SETTINGS, ...next };
+  $('#titleText').textContent = settings.title;
+  $('#mantraText').textContent = settings.mantra;
+  const deity = $('#deity');
+  const img = $('#deityImg');
+  if (settings.deityImage) {
+    if (img.getAttribute('src') !== settings.deityImage) img.src = settings.deityImage;
+    deity.classList.add('has-img');
+  } else {
+    img.removeAttribute('src');
+    deity.classList.remove('has-img');
+  }
+}
+$('#deityImg').addEventListener('error', () => $('#deity').classList.remove('has-img'));
+
+// ---------- hints on the altar cloth ----------
+const HINTS = [
+  'พิมพ์ “สาธุ” 🙏 ร่วมกราบไหว้',
+  'พิมพ์ “ขอพร” ตามด้วยคำอธิษฐาน',
+  'พิมพ์ “จุดธูป” ถวายธูปบูชา',
+  'ของขวัญ → ของถวายบนแท่นบูชา',
+];
+let hintIdx = 0;
+const hintEl = $('#hint');
+hintEl.textContent = HINTS[0];
+setInterval(() => {
+  hintEl.style.opacity = '0';
+  setTimeout(() => {
+    hintIdx = (hintIdx + 1) % HINTS.length;
+    hintEl.textContent = HINTS[hintIdx];
+    hintEl.style.opacity = '1';
+  }, 500);
+}, 4500);
+
+// ---------- data source ----------
+function showStatus(text) {
+  const s = $('#status');
+  s.textContent = text;
+  s.classList.toggle('show', Boolean(text));
+}
+
+function connect() {
+  let opened = false;
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  const warn = setTimeout(() => { if (!opened) showStatus('ยังเชื่อมต่อโปรแกรมไม่ได้ ตรวจว่าเปิดโปรแกรมไว้หรือยัง'); }, 4000);
+  ws.onopen = () => { opened = true; clearTimeout(warn); showStatus(''); };
+  ws.onmessage = (m) => {
+    let msg;
+    try { msg = JSON.parse(m.data); } catch { return; }
+    if (msg.type === 'hello') { applySettings(msg.settings); renderState(msg.state); }
+    else if (msg.type === 'event') { handleEvent(msg.event); renderState(msg.state); }
+    else if (msg.type === 'settings') applySettings(msg.settings);
+    else if (msg.type === 'state') renderState(msg.state);
+  };
+  ws.onclose = () => {
+    clearTimeout(warn);
+    if (opened) showStatus('การเชื่อมต่อกับโปรแกรมหลุด กำลังเชื่อมต่อใหม่…');
+    setTimeout(connect, 2000);
+  };
+}
+
+function startDemo() {
+  settings.goal = Number(params.get('goal')) || 900;
+  const game = createGame(() => settings);
+  const sim = createSim();
+  const feed = (ev) => {
+    const out = game.apply(ev);
+    handleEvent(out);
+    renderState(game.snapshot());
+  };
+  window.demo = { feed, sim };
+  renderState(game.snapshot());
+  for (let i = 0; i < 14; i++) setTimeout(() => feed(sim.join()), 200 + i * 260);
+  if (params.get('auto') === '0') return;
+  const tick = () => {
+    feed(sim.next());
+    setTimeout(tick, rand(500, 1300));
+  };
+  setTimeout(tick, 4200);
+}
+
+applySettings(settings);
+if (DEMO) startDemo();
+else connect();
