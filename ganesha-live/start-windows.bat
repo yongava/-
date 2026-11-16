@@ -10,9 +10,7 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-if not exist node_modules (
-  echo Installing for the first time, please wait...
-  call npm install --omit=dev
-)
+echo Checking components, please wait...
+call npm install --omit=dev --no-audit --no-fund
 node server.js
 pause

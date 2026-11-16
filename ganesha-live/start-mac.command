@@ -9,8 +9,6 @@ if ! command -v node >/dev/null 2>&1; then
   read -r -p "Press Enter to close"
   exit 1
 fi
-if [ ! -d node_modules ]; then
-  echo "Installing for the first time, please wait..."
-  npm install --omit=dev
-fi
+echo "Checking components, please wait..."
+npm install --omit=dev --no-audit --no-fund
 node server.js
